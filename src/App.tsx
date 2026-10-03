@@ -7,6 +7,8 @@ import { Animal, Board, RescueAnimal } from './Art';
 import { HintVisual } from './HintVisual';
 import { RescueEvent } from './AdventureEvents';
 import { chapters, chapterIndex, encounter, routeChoices } from './adventure';
+import { Dice } from './Dice';
+import { useJourneyMotion } from './useJourneyMotion';
 
 const names = ['こむぎ', 'みみ', 'くるみ', 'そら'];
 const saveKey = 'manabi-sugoroku-save-v1';
@@ -30,21 +32,25 @@ function App() {
   const [settings, setSettings] = useState(false);
   const [speechOn, setSpeechOn] = useState(false);
   const [volume, setVolume] = useState(0);
-  const [shortMotion, setShortMotion] = useState(() => matchMedia('(prefers-reduced-motion: reduce)').matches);
+  const [shortMotion, setShortMotion] = useState(false);
+  const [systemReduced, setSystemReduced] = useState(() => matchMedia('(prefers-reduced-motion: reduce)').matches);
+  const [hidden, setHidden] = useState(() => document.hidden);
   const [notice, setNotice] = useState('');
   const [exchangeNotice, setExchangeNotice] = useState('');
-  const [visualMove, setVisualMove] = useState({ token: -1, position: 0 });
   const rescueLock = useRef(false);
   const focusRef = useRef<HTMLHeadingElement>(null);
   const playPanelRef = useRef<HTMLElement>(null);
   const modalRef = useRef<HTMLDivElement>(null);
   const audioRef = useRef<AudioContext | null>(null);
   const modalOpen = paused || settings || confirmRestart;
+  const reducedMotion = shortMotion || systemReduced;
+  const motionSuspended = modalOpen || hidden;
+  const motion = useJourneyMotion(game, gameRef, setGame, reducedMotion, motionSuspended);
   const current = game ? game.players[game.turnIndex] : null;
   const question = game ? getQuestion(game, questions) : null;
   const chapter = game ? chapterIndex(game) : 0;
   const checkpoints = game ? checkpointPositions(game) : [8, 16, 24];
-  const visualPosition = game ? game.phase === 'moving' && visualMove.token === game.token ? visualMove.position : game.position : 0;
+  const visualPosition = game ? game.position + (game.phase === 'moving' ? motion.step : 0) : 0;
   const story = game ? encounter(game) : null;
   const currentRoute = game?.routes[chapter - 1] ?? 'forest';
   const isRescue = game?.phase === 'event' && game.turnsCompleted % 4 === 0;
@@ -106,20 +112,13 @@ function App() {
   function editPlayer(index: number, patch: Partial<Player>) { setPlayers(list => list.map((p, i) => i === index ? { ...p, ...patch } : p)); }
 
   useEffect(() => {
-    if (game?.phase !== 'moving' || modalOpen) return;
-    const token = game.token;
-    const timers: ReturnType<typeof setTimeout>[] = [];
-    setVisualMove({ token, position: game.position });
-    if (!shortMotion) {
-      for (let step = 1; step <= (game.dice ?? 1); step++) {
-        timers.push(setTimeout(() => setVisualMove({ token, position: game.position + step }), 180 + step * 260));
-      }
-    }
-    timers.push(setTimeout(() => {
-      if (gameRef.current) updateGame(reducer(gameRef.current, { type: 'moveComplete', token }));
-    }, shortMotion ? 80 : 440 + (game.dice ?? 1) * 260));
-    return () => timers.forEach(clearTimeout);
-  }, [game?.phase, game?.token, game?.dice, game?.position, shortMotion, modalOpen]);
+    const media = matchMedia('(prefers-reduced-motion: reduce)');
+    const preference = () => setSystemReduced(media.matches);
+    const visibility = () => { setHidden(document.hidden); if (document.hidden) stopSpeech(); };
+    media.addEventListener('change', preference);
+    document.addEventListener('visibilitychange', visibility);
+    return () => { media.removeEventListener('change', preference); document.removeEventListener('visibilitychange', visibility); };
+  }, []);
 
   useEffect(() => {
     stopSpeech();
@@ -161,7 +160,7 @@ function App() {
     document.addEventListener('keydown', trap); return () => { document.removeEventListener('keydown', trap); previous?.focus(); };
   }, [modalOpen]);
 
-  return <div className={`app ${shortMotion ? 'short-motion' : ''}`}>
+  return <div className={`app ${reducedMotion ? 'short-motion' : ''} ${motionSuspended ? 'motion-paused' : ''}`}>
     <header className="site-header"><a className="brand" href="#" onClick={e => { e.preventDefault(); if (game) setPaused(true); }} aria-label="まなびの冒険すごろく ホーム"><span className="brand-icon">✦</span><span>まなびの<span className="brand-small">冒険すごろく</span></span></a><div className="header-actions"><span className="co-op-label">みんなで ちからを あわせよう</span><button className="icon-button" onClick={() => setSettings(true)}>⚙ <span>せってい</span></button>{game && <button className="icon-button" onClick={() => setPaused(true)}>Ⅱ <span>ひとやすみ</span></button>}</div></header>
     <main inert={modalOpen}>
       {!game ? <>
@@ -175,15 +174,25 @@ function App() {
         </section><aside className="adult-note"><strong>おうちの方へ</strong><p>国語・算数の一部単元を収録した初版です。各学年20問、全120問。学年の全範囲を網羅するものではありません。本名・アカウントは不要です。ゲーム中にデータを外部送信せず、「ほぞん」を押したときだけ、このブラウザに進行状況を保存します。</p></aside>
       </> : <>
         <section className="adventure-heading"><div><p className="eyebrow">みんなで つくる、ひとつの 冒険</p><h1>こもれびの もりの おとしもの</h1></div><div className="mission"><span className="mission-icon">⚑</span><div><small>なかまを たすけよう</small><strong>{game.rescues} <span>/ 3 びき</span></strong></div></div></section>
-        <div className="adventure-layout"><div className="journey-column"><section className="board-panel" aria-label="冒険のマップ"><div className="board-top"><span>第{chapter + 1}話 · {chapters[chapter].title}</span><span>{game.turnsCompleted} / {game.totalTurns} まなび</span></div><Board position={visualPosition} totalDistance={game.goalPosition} checkpoints={checkpoints} routes={game.routes} rescued={game.rescues} rescueProgress={game.rescueProgress} route={currentRoute} moving={game.phase === 'moving' && !modalOpen} characters={game.players.map(p => p.character)}/><div className="board-bottom"><span>{game.phase === 'goal' ? 'みんなの ちからで、むらに とうちゃく！' : game.position >= checkpoints[chapter] ? 'なかまが まっているよ！' : 'つぎの なかままで あと ' + (checkpoints[chapter] - visualPosition) + 'マス'}</span><span>{visualPosition} / {game.goalPosition} マス</span></div><div className="progress-track" role="progressbar" aria-label="冒険の進みぐあい" aria-valuemin={0} aria-valuemax={game.totalTurns} aria-valuenow={game.turnsCompleted}><span style={{ width: game.turnsCompleted / game.totalTurns * 100 + '%' }}/></div></section>
+        <div className="adventure-layout"><div className="journey-column"><section className="board-panel" aria-label="冒険のマップ"><div className="board-top"><span>第{chapter + 1}話 · {chapters[chapter].title}</span><span>{game.turnsCompleted} / {game.totalTurns} まなび</span></div><Board position={visualPosition} totalDistance={game.goalPosition} checkpoints={checkpoints} routes={game.routes} rescued={game.rescues} rescueProgress={game.rescueProgress} route={currentRoute} moving={motion.stage === 'stepping' && !motionSuspended} arrived={motion.stage === 'arrived'} travel={game.phase === 'moving' && motion.stage !== 'rolling' ? { start: game.position, dice: game.dice!, step: motion.step } : undefined} characters={game.players.map(p => p.character)}/><div className="board-bottom"><span>{game.phase === 'goal' ? 'みんなの ちからで、むらに とうちゃく！' : game.position >= checkpoints[chapter] ? 'なかまが まっているよ！' : 'つぎの なかままで あと ' + (checkpoints[chapter] - visualPosition) + 'マス'}</span><span>{visualPosition} / {game.goalPosition} マス</span></div><div className="progress-track" role="progressbar" aria-label="冒険の進みぐあい" aria-valuemin={0} aria-valuemax={game.totalTurns} aria-valuenow={game.turnsCompleted}><span style={{ width: game.turnsCompleted / game.totalTurns * 100 + '%' }}/></div></section>
           <ol className="journey-chapters" aria-label="3つのおてつだい">{chapters.map((item, index) => <li key={item.friend} className={game.rescues > index ? 'chapter-done' : chapter === index ? 'chapter-current' : ''}><RescueAnimal kind={index} size={46}/><div><small>{game.rescues > index ? '✓ たすけた！' : chapter === index ? 'いまの おてつだい' : 'つぎの おてつだい'}</small><strong>{item.friend}</strong><span>{index === 0 ? 'はしを なおそう' : index === 1 ? 'かごを とどけよう' : 'あかりを ともそう'}</span></div></li>)}</ol>
           {game.phase !== 'goal' && <div className="chapter-preparation"><div><strong>{isRescue ? 'おてつだいの じゅんびが できた！' : chapters[chapter].mission}</strong><small>{isRescue ? 'そうだんして、おどうぐを おしてみよう。' : '4つの まなびを あつめると、おどうぐが とどくよ。'}</small></div><div className="learning-lights" aria-label={Math.min(4, Math.max(0, game.turnsCompleted - chapter * 4)) + ' / 4 まなび'}>{[0,1,2,3].map(light => <span key={light} className={game.turnsCompleted - chapter * 4 > light ? 'lit' : ''}>{game.turnsCompleted - chapter * 4 > light ? '✦' : '·'}</span>)}</div></div>}
         </div>
         <section className="play-panel" aria-label="いまの手番" ref={playPanelRef}>
           {game.phase !== 'goal' && current && <div className="turn-banner"><Animal kind={current.character} size={62}/><div><small>{game.turnIndex + 1}人め ・ 小学{current.grade}年{current.review ? '（ふくしゅう）' : ''}</small><strong>{names[current.character]}の ばん</strong></div><span className="turn-star">✦</span></div>}
           {game.phase !== 'goal' && <ol className="turn-steps" aria-label="つぎにすること">{['サイコロ', 'もんだい', isRescue ? 'おてつだい' : 'できごと'].map((label, index) => <li key={index} aria-current={(game.phase === 'roll' || game.phase === 'moving' ? 0 : game.phase === 'question' || game.phase === 'feedback' ? 1 : 2) === index ? 'step' : undefined}><b>{index + 1}</b>{label}</li>)}</ol>}
-          {(game.phase === 'roll' || game.phase === 'moving') && <div className="roll-scene"><p className="eyebrow">つぎは どこへ いこう？</p><h2 ref={focusRef} tabIndex={-1}>{game.phase === 'moving' ? `${game.dice}マス すすむよ！` : 'サイコロを ふろう'}</h2><div className={`dice ${game.phase === 'moving' ? 'rolling' : ''}`} aria-hidden="true">{game.phase === 'moving' ? ['','⚀','⚁','⚂'][game.dice ?? 1] : '⚂'}</div><p>{game.phase === 'moving' ? 'ひとマスずつ、コトコト。' : 'でる めは 1・2・3。'}<br/>{game.phase === 'moving' ? Math.max(0, visualPosition - game.position) + ' / ' + game.dice + 'マス いどうちゅう' : 'つぎの なかまを めざそう！'}</p>{game.phase === 'roll' ? <button className="primary full" onClick={() => { send({ type: 'roll' }); playSound(); }}>サイコロを ふる <span>↗</span></button> : <button className="secondary full" onClick={() => send({ type: 'moveComplete' })}>アニメを とばす →</button>}<div className="gentle-note">♡ ゆっくりで いいよ。いっしょに かんがえよう。</div></div>}
-          {(game.phase === 'question' || game.phase === 'feedback') && question && <div className="question-scene"><div className="question-meta"><span>{question.subject === 'math' ? 'さんすう' : 'こくご'}</span><small>{question.grade}年 · {question.unit}</small></div><h2 className="question-prompt" ref={focusRef} tabIndex={-1}>{question.prompt}</h2>{speechOn && game.phase === 'question' && <button className="text-button speak-button" onClick={speak}>♪ もんだいを きく</button>}<div className="choices">{question.choices.map((choice, index) => <button key={question.id + index} className={`choice ${game.phase === 'feedback' && index === question.answer ? 'correct' : ''} ${game.phase === 'question' && game.attempts > 0 && game.selectedChoice === index ? 'tried' : ''}`} disabled={game.phase !== 'question'} onClick={() => { stopSpeech(); send({ type: 'answer', choice: index }); if (index === question.answer) playSound(); }}><span className="choice-letter">{['ア', 'イ', 'ウ', 'エ'][index]}</span><span>{choice}</span>{game.phase === 'feedback' && index === question.answer && <span className="correct-mark">✓</span>}</button>)}</div>
+          {(game.phase === 'roll' || game.phase === 'moving') && <div className="roll-scene" data-motion-stage={motion.stage}>
+            <p className="eyebrow">{motion.stage === 'rolling' ? 'サイコロが ころころ…' : motion.stage === 'arrived' ? 'ぴたっ！ ついたよ' : 'つぎは どこへ いこう？'}</p>
+            <h2 ref={focusRef} tabIndex={-1}>{game.phase === 'roll' ? 'サイコロを ふろう' : motion.stage === 'rolling' ? 'なにが でるかな？' : motion.stage === 'arrived' ? 'とうちゃく！' : game.dice + 'マス すすむよ！'}</h2>
+            <Dice face={motion.face} settled={game.phase === 'moving' && motion.stage !== 'rolling'} rolling={motion.stage === 'rolling'}/>
+            <div className="roll-progress" data-step={motion.step} data-total={game.dice ?? 0} aria-live="polite" aria-atomic="true">
+              <strong>{game.phase === 'roll' ? 'でる めは 1・2・3。' : motion.stage === 'rolling' ? 'ころがって いるよ' : motion.stage === 'settled' ? game.dice + ' の め！ しゅっぱつ！' : motion.stage === 'arrived' ? game.dice + 'マス すすんだよ' : motion.step + ' / ' + game.dice + 'マス すすんだよ'}</strong>
+              {game.phase === 'moving' && motion.stage !== 'rolling' ? <ol className="move-count" aria-label="すすむマスを かぞえよう">{Array.from({ length: game.dice! }, (_, i) => <li key={i} className={motion.step > i ? 'count-reached' : ''} aria-current={motion.step === i + 1 ? 'step' : undefined}><b>{i + 1}</b><span>{motion.step > i ? '✓' : '・'}</span></li>)}</ol> : <p>つぎの なかまを めざそう！</p>}
+            </div>
+            <button className="primary full" disabled={game.phase !== 'roll'} onClick={() => { send({ type: 'roll' }); playSound(); }}>{game.phase === 'roll' ? <>サイコロを ふる <span>↗</span></> : motion.stage === 'rolling' ? 'サイコロを ふっているよ' : 'ワゴンを みまもろう'}</button>
+            <div className="motion-footer">{game.phase === 'moving' ? <button className="text-button full" data-testid="skip-motion" onClick={event => { if (event.detail <= 1) send({ type: 'moveComplete' }); }}>アニメを とばす →</button> : <p className="gentle-note">♡ ゆっくりで いいよ。いっしょに かんがえよう。</p>}</div>
+          </div>}
+          {(game.phase === 'question' || game.phase === 'feedback') && question && <div className="question-scene"><div className="last-roll" data-dice={game.dice} data-start={game.position - (game.dice ?? 0)} data-end={game.position}><span aria-hidden="true">{['','⚀','⚁','⚂'][game.dice ?? 1]}</span><strong>{game.dice} の め · {game.dice}マス すすんだよ</strong><span>✓ とうちゃく</span></div><div className="question-meta"><span>{question.subject === 'math' ? 'さんすう' : 'こくご'}</span><small>{question.grade}年 · {question.unit}</small></div><h2 className="question-prompt" ref={focusRef} tabIndex={-1}>{question.prompt}</h2>{speechOn && game.phase === 'question' && <button className="text-button speak-button" onClick={speak}>♪ もんだいを きく</button>}<div className="choices">{question.choices.map((choice, index) => <button key={question.id + index} className={`choice ${game.phase === 'feedback' && index === question.answer ? 'correct' : ''} ${game.phase === 'question' && game.attempts > 0 && game.selectedChoice === index ? 'tried' : ''}`} disabled={game.phase !== 'question'} onClick={event => { if (event.detail > 1) return; stopSpeech(); send({ type: 'answer', choice: index }); if (index === question.answer) playSound(); }}><span className="choice-letter">{['ア', 'イ', 'ウ', 'エ'][index]}</span><span>{choice}</span>{game.phase === 'feedback' && index === question.answer && <span className="correct-mark">✓</span>}</button>)}</div>
             {game.phase === 'question' ? <><div className="feedback-space" aria-live="polite">{game.attempts > 0 && <p className="retry-note">もういちど かんがえてみよう。<br/>まちがえても もどらないよ。</p>}{game.hintUsed && <div className="hint-box"><strong>ひらめきの ヒント</strong><p>{question.hint}</p><HintVisual question={question}/></div>}{game.helpUsed && <div className="help-box">なかまや おうちの人と そうだんしよう。<br/>ひとりなら ヒントを つかってね。<br/><strong>さいごは じぶんで えらんでみよう！</strong></div>}{exchangeNotice && <p>{exchangeNotice}</p>}</div><div className="support-buttons"><button className="secondary" onClick={() => send({ type: 'hint' })}>✦ ヒント</button><button className="secondary" onClick={() => send({ type: 'help' })}>♡ たすけて</button></div><button className="text-button exchange" onClick={() => send({ type: 'exchange' })}>↻ まだ ならっていない · もんだいを かえる</button>{game.attempts >= 2 && <button className="text-button" onClick={() => send({ type: 'reveal' })}>こたえと せつめいを みる →</button>}</> : <div className="answer-feedback" aria-live="polite"><h3>{game.feedback === 'correct' ? '✦ できたね！' : '✦ いっしょに おぼえよう！'}</h3><p>{question.explanation}</p><p className="learning-earned">✦ まなびの あかりを ひとつ みつけた！</p><button className="primary full" data-testid="continue-answer" onClick={() => send({ type: 'continue' })}>{game.turnsCompleted % 4 === 3 ? 'なかまを たすけに いく →' : 'もりの できごとへ →'}</button></div>}
           </div>}
           {game.phase === 'event' && <div className={'event-scene ' + (isRescue ? 'rescue-panel' : '')}>
@@ -204,7 +213,7 @@ function App() {
     </main>
     <footer><span>まなびの冒険すごろく</span><span>こくごと さんすうで、ちいさな 一歩。</span><a href="https://github.com/metaborin/manabi-sugoroku" target="_blank" rel="noreferrer">この ゲームについて ↗</a></footer>
     {modalOpen && <div className="modal-backdrop"><div className="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title" ref={modalRef}>
-      {confirmRestart ? <><h2 id="modal-title">はじめから あそぶ？</h2><p>いまの ぼうけんは おわるよ。<br/>ほぞんした つづきは のこるよ。</p><button className="primary full" onClick={() => setConfirmRestart(false)}>いまの ぼうけんに もどる</button><button className="secondary full" onClick={restart}>はじめから あそぶ</button></> : settings ? <><h2 id="modal-title">あそびやすく せってい</h2><label className="field-label">こうかおんの おおきさ<select value={volume} onChange={e => setVolume(Number(e.target.value))}><option value={0}>オフ（おとは でない）</option><option value={20}>ちいさい</option><option value={50}>ふつう</option></select></label><label className="check-label"><input type="checkbox" checked={speechOn} onChange={e => { setSpeechOn(e.target.checked); stopSpeech(); }}/>もんだいの よみあげボタンを つかう</label><p className="setting-help">たんまつの 日本語音声が ある ときだけ つかえます。よみかたを こたえる もんだいは よみません。</p><label className="check-label"><input type="checkbox" checked={shortMotion} onChange={e => setShortMotion(e.target.checked)}/>うごきを みじかくする</label><button className="primary full" onClick={() => setSettings(false)}>とじる</button>{saved && <button className="text-button" onClick={() => { try { localStorage.removeItem(saveKey); setSaved(null); setNotice('ほぞんした つづきを けしたよ。いまの ぼうけんは つづけられるよ。'); } catch { setNotice('ほぞんを けせなかったよ。'); } }}>ほぞんした つづきを けす</button>}</> : <><p className="eyebrow">ゆっくり ひとやすみ</p><h2 id="modal-title">ぼうけんは まっているよ。</h2><p>とじる ときは「ほぞん」を おしてね。<br/>この たんまつで つづきから あそべるよ。</p><button className="primary full" onClick={() => setPaused(false)}>ぼうけんを つづける →</button><button className="secondary full" onClick={save}>ここまでを ほぞん</button><button className="text-button" onClick={() => setConfirmRestart(true)}>はじめから あそぶ</button>{notice && <p role="status">{notice}</p>}</>}
+      {confirmRestart ? <><h2 id="modal-title">はじめから あそぶ？</h2><p>いまの ぼうけんは おわるよ。<br/>ほぞんした つづきは のこるよ。</p><button className="primary full" onClick={() => setConfirmRestart(false)}>いまの ぼうけんに もどる</button><button className="secondary full" onClick={restart}>はじめから あそぶ</button></> : settings ? <><h2 id="modal-title">あそびやすく せってい</h2><label className="field-label">こうかおんの おおきさ<select value={volume} onChange={e => setVolume(Number(e.target.value))}><option value={0}>オフ（おとは でない）</option><option value={20}>ちいさい</option><option value={50}>ふつう</option></select></label><label className="check-label"><input type="checkbox" checked={speechOn} onChange={e => { setSpeechOn(e.target.checked); stopSpeech(); }}/>もんだいの よみあげボタンを つかう</label><p className="setting-help">たんまつの 日本語音声が ある ときだけ つかえます。よみかたを こたえる もんだいは よみません。</p><label className="check-label"><input type="checkbox" checked={reducedMotion} disabled={systemReduced} onChange={e => setShortMotion(e.target.checked)}/>うごきを みじかくする</label><p className="setting-help">{systemReduced ? 'たんまつの「動きを減らす」に あわせています。' : 'サイコロの かいてんを へらし、はやく すすみます。'}</p><button className="primary full" onClick={() => setSettings(false)}>とじる</button>{saved && <button className="text-button" onClick={() => { try { localStorage.removeItem(saveKey); setSaved(null); setNotice('ほぞんした つづきを けしたよ。いまの ぼうけんは つづけられるよ。'); } catch { setNotice('ほぞんを けせなかったよ。'); } }}>ほぞんした つづきを けす</button>}</> : <><p className="eyebrow">ゆっくり ひとやすみ</p><h2 id="modal-title">ぼうけんは まっているよ。</h2><p>とじる ときは「ほぞん」を おしてね。<br/>この たんまつで つづきから あそべるよ。</p><button className="primary full" onClick={() => setPaused(false)}>ぼうけんを つづける →</button><button className="secondary full" onClick={save}>ここまでを ほぞん</button><button className="text-button" onClick={() => setConfirmRestart(true)}>はじめから あそぶ</button>{notice && <p role="status">{notice}</p>}</>}
     </div></div>}
   </div>;
 }

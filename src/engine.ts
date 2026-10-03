@@ -22,6 +22,7 @@ export interface GameState {
   turnsCompleted: number;
   totalTurns: number;
   completedByPlayer: number[];
+  /** Last committed space. Rolling and one-space animation remain UI-only until moveComplete. */
   position: number;
   goalPosition: number;
   dice: number | null;
@@ -45,6 +46,7 @@ export interface GameState {
 type Guard = { token: number };
 export type GameAction = Guard & (
   | { type: 'roll' }
+  /** Animation completion and skip share this atomic, token-guarded landing action. */
   | { type: 'moveComplete' }
   | { type: 'answer'; choice: number }
   | { type: 'hint' }
@@ -171,6 +173,7 @@ export function reducer(state: GameState, action: GameAction): GameState {
   let next: GameState = state;
   switch (action.type) {
     case 'roll':
+      // Commit the result before presentation so interruptions can never roll again.
       if (state.phase === 'roll') next = { ...state, phase: 'moving', dice: state.rolls[state.turnsCompleted]! };
       break;
     case 'moveComplete':

@@ -10,6 +10,8 @@ export type BoardProps = {
   checkpoints?: number[];
   routes?: ('forest' | 'river')[];
   moving?: boolean;
+  arrived?: boolean;
+  travel?: { start: number; dice: number; step: number };
   rescueProgress?: number;
 };
 
@@ -249,7 +251,7 @@ export function RescueAnimal({ kind, size = 88 }: { kind: number; size?: number 
   </svg>;
 }
 
-export function Board({ position, totalDistance, rescued, route, characters, checkpoints, routes, moving = false, rescueProgress = 0 }: BoardProps) {
+export function Board({ position, totalDistance, rescued, route, characters, checkpoints, routes, moving = false, arrived = false, travel, rescueProgress = 0 }: BoardProps) {
   const uid = useId().replace(/:/g, '');
   const distance = Math.max(3, Math.round(totalDistance));
   const progress = Math.max(0, Math.min(distance, position));
@@ -271,7 +273,8 @@ export function Board({ position, totalDistance, rescued, route, characters, che
   ];
   const cappedRescued = Math.max(0, Math.min(3, rescued));
   return <svg
-    className={`adventure-board${moving ? ' is-moving' : ''}`}
+    className={`adventure-board${moving ? ' is-moving' : ''}${arrived ? ' has-arrived' : ''}`}
+    data-position={progress}
     width="100%"
     viewBox="0 0 900 570"
     role="img"
@@ -355,7 +358,11 @@ export function Board({ position, totalDistance, rescued, route, characters, che
           const p = place(value);
           const complete = value <= progress;
           const special = chapterEnds.includes(value);
+          const travelStep = travel && value > travel.start && value <= travel.start + travel.dice ? value - travel.start : 0;
           return <g key={value} transform={`translate(${p.x} ${p.y})`} data-square={value} data-checkpoint={special || undefined}>
+            {travelStep > 0 && <g data-travel-step={travelStep} data-reached={value <= progress}>
+              <circle r="24" fill={value <= progress ? '#fff0ac' : '#fffdf5'} fillOpacity=".85" stroke="#275e48" strokeWidth={value === progress ? 4 : 2} strokeDasharray={value > progress ? '4 4' : undefined}/>
+            </g>}
             {special && <circle r="23" fill="#fff7d1" stroke="#c89543" strokeWidth="1.6" strokeDasharray="3 4" />}
             <circle r={value === 0 || special ? 18 : 12.5} fill={complete ? '#f6c970' : '#fffaf0'} stroke={complete ? '#a47a33' : '#b7a17c'} strokeWidth="1.5" />
             {special ? <><path d="M0 -12 L2 -7 8 -7 3 -3 4 2 0 -1 -4 2 -3 -3 -8 -7 -2 -7Z" fill={complete ? '#946629' : '#b19455'} /><text y="12" fill="#735c34" fontSize="10">{value}</text></> : <text y="4" fill={complete ? '#6e5026' : '#73644b'} fontSize="11">{value}</text>}
@@ -399,7 +406,7 @@ export function Board({ position, totalDistance, rescued, route, characters, che
       <g transform="translate(265 404)"><path d="M-13 7 Q-16 -5 -3 -10 Q10 -9 12 8Z" fill="#9e9378" /><path d="M-22 12 Q-24 2 -13 0 Q-2 2 -4 13Z" fill="#b5a888" /></g>
       {[{ x: 192, y: 532 }, { x: 212, y: 525 }, { x: 477, y: 477 }, { x: 496, y: 486 }, { x: 89, y: 175 }, { x: 175, y: 350 }, { x: 596, y: 523 }, { x: 858, y: 316 }].map((p, i) => <Flower key={i} {...p} color={i % 3 === 0 ? '#e59984' : '#f2d183'} />)}
       <g transform="translate(257 61)" fill="none" stroke="#789478" strokeWidth="2" strokeLinecap="round"><path d="M0 9 Q6 0 13 9 M13 9 Q19 1 25 9 M35 21 Q40 13 46 21 M46 21 Q52 14 57 21" /></g>
-      <g className="board-caravan" transform={`translate(${wagon.x - 67} ${wagon.y - 81}) scale(.8)`} filter={`url(#${uid}-shadow)`}>
+      <g className="board-caravan" data-position={progress} transform={`translate(${wagon.x - 67} ${wagon.y - 81}) scale(.8)`} filter={`url(#${uid}-shadow)`}>
         <g transform={progress > chapterEnds[0] && progress <= chapterEnds[1] ? 'translate(168 0) scale(-1 1)' : undefined}><CaravanGlyph characters={characters} rescued={cappedRescued} /></g>
       </g>
       <Tree x={24} y={563} scale={.94} /><Tree x={890} y={570} scale={.86} kind={1} />

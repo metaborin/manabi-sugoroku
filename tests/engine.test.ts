@@ -356,3 +356,89 @@ test('save validation rejects inconsistent pending and completed rescues', () =>
   assert.equal(restoreGame({ ...state, rescueProgress: 0 }, questions), null);
   assert.equal(restoreGame({ ...state, rescues: 2 }, questions), null);
 });
+
+test('interrupted rolling and movement restore the same committed die, landing and question from both save versions', () => {
+  const seenDice = new Set<number>();
+  for (const count of [1, 2, 4]) {
+    let state = createGame(Array.from({ length: count }, (_, index) => player(index, [1, 6, 3, 5][index] as Grade)), questions, 2026);
+    for (let turn = 0; turn < 12; turn += 1) {
+      const before = state;
+      state = act(state, { type: 'roll' });
+      seenDice.add(state.dice!);
+      assert.equal(state.position, before.position, 'presentation cannot commit an intermediate square');
+      assert.equal(state.questionId, null, 'questions are drawn only after landing');
+      assert.deepEqual(state.usedQuestionIds, before.usedQuestionIds);
+      const uninterrupted = act(state, { type: 'moveComplete' });
+      for (const version of [1, 2]) {
+        const snapshot: Record<string, unknown> = { ...clone(state), version };
+        if (version === 1) delete snapshot.rescueProgress;
+        let restored = restoreGame(snapshot, questions)!;
+        assert.ok(restored);
+        // Repeated interruption/resume must not consume a roll or a question.
+        for (let interruption = 0; interruption < 3; interruption += 1) {
+          restored = restoreGame(clone(restored), questions)!;
+          assert.deepEqual(restored, state);
+          assert.equal(act(restored, { type: 'roll' }), restored);
+          assert.equal(act(restored, { type: 'answer', choice: 0 }), restored);
+          assert.equal(act(restored, { type: 'continue' }), restored);
+        }
+        assert.deepEqual(act(restored, { type: 'moveComplete' }), uninterrupted);
+      }
+      assert.equal(uninterrupted.position - before.position, state.dice);
+      state = nextTurn(finishQuestion(uninterrupted));
+    }
+    assert.equal(state.phase, 'goal');
+    assert.deepEqual(state.completedByPlayer, Array.from({ length: count }, () => 12 / count));
+  }
+  assert.deepEqual([...seenDice].sort(), [1, 2, 3]);
+});
+
+test('skip and automatic landing race safely, including the last move, without bypassing the final learning and rescue', () => {
+  let state = createGame([player(), player(1, 6)], questions, 19);
+  const previousCompletions: GameAction[] = [];
+  for (let turn = 0; turn < 12; turn += 1) {
+    const before = state;
+    state = act(state, { type: 'roll' });
+    for (const stale of previousCompletions) assert.equal(reducer(state, stale), state, 'a late animation callback cannot land a later turn');
+    const skip: GameAction = { type: 'moveComplete', token: state.token };
+    const timer: GameAction = { type: 'moveComplete', token: state.token };
+    const skipFirst = reducer(reducer(state, skip), timer);
+    const timerFirst = reducer(reducer(state, timer), skip);
+    assert.deepEqual(skipFirst, timerFirst);
+    state = skipFirst;
+    assert.equal(state.phase, 'question');
+    assert.equal(state.position, before.position + state.dice!);
+    assert.equal(state.turnIndex, before.turnIndex);
+    assert.equal(state.turnsCompleted, before.turnsCompleted);
+    assert.deepEqual(state.completedByPlayer, before.completedByPlayer);
+    assert.equal(act(state, { type: 'moveComplete' }), state, 'a second skip cannot land twice even with a current token');
+    if (turn === 11) {
+      assert.equal(state.position, state.goalPosition);
+      assert.equal(state.rescues, 2);
+      assert.equal(act(state, { type: 'next' }), state, 'arriving at the goal square is not completing the adventure');
+    }
+    previousCompletions.push(timer);
+    state = finishQuestion(state);
+    if (turn === 11) {
+      assert.equal(state.eventKind, 'final');
+      assert.equal(state.rescueProgress, 0);
+      assert.equal(act(state, { type: 'next' }), state);
+    }
+    state = nextTurn(state);
+  }
+  assert.equal(state.phase, 'goal');
+  assert.equal(state.rescues, 3);
+  assert.deepEqual(state.completedByPlayer, [6, 6]);
+});
+
+test('movement snapshots reject visual partial positions and altered dice instead of resuming an inconsistent journey', () => {
+  let state = createGame([player()], questions, 42);
+  state = nextTurn(finishQuestion(arrive(state)));
+  state = act(state, { type: 'roll' });
+  assert.ok(restoreGame(clone(state), questions));
+  for (let visualStep = 1; visualStep <= state.dice!; visualStep += 1) {
+    assert.equal(restoreGame({ ...state, position: state.position + visualStep }, questions), null);
+  }
+  assert.equal(restoreGame({ ...state, dice: state.dice! % 3 + 1 }, questions), null);
+  assert.equal(restoreGame({ ...state, questionId: state.decks[state.turnIndex]![0]!.id }, questions), null);
+});

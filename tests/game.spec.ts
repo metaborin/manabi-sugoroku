@@ -363,7 +363,8 @@ test('full movement visits every rolled square and chapter one ends at its real 
       observer.observe(document.querySelector('main')!, { childList: true, characterData: true, subtree: true });
     }));
     await page.getByRole('button', { name: /サイコロを ふる/ }).click();
-    const dice = Number((await page.locator('.roll-scene h2').innerText()).match(/\d+/)![0]);
+    await expect(page.locator('.dice')).toHaveAttribute('data-settled', 'true');
+    const dice = Number(await page.locator('.dice').getAttribute('data-face'));
     await expect(page.locator('.question-prompt')).toBeVisible();
     const visited = await samples;
     expect(visited).toEqual(Array.from({ length: dice + 1 }, (_, index) => position + index));
