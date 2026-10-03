@@ -252,9 +252,18 @@ test('enabling reduced motion during a roll completes the same turn once', async
 for (const stage of ['rolling', 'stepping']) {
   test(`explicit skip during ${stage} commits exactly one move and stale timers cannot move the next player`, async ({ page }) => {
     await start(page, [1, 6]);
+    // Hold browser timers while using real pointer input. A one-square stepping
+    // stage lasts only 360 ms and can fall between assertion polling intervals.
+    await page.clock.install();
+    await page.clock.pauseAt(Date.now() + 1_000);
     await page.getByRole('button', { name: /サイコロを ふる/ }).dblclick();
+    for (let elapsed = 0; elapsed < 5_000 && await page.locator('.roll-scene').getAttribute('data-motion-stage') !== stage; elapsed += 50) {
+      await page.clock.runFor(50);
+    }
     await expect(page.locator('.roll-scene')).toHaveAttribute('data-motion-stage', stage);
     await page.getByTestId('skip-motion').dblclick();
+    // Resume real time so stale callbacks would still be caught on the next turn.
+    await page.clock.resume();
     const result = await lastRoll(page);
     expect(result.start).toBe(0);
     await expect(page.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '0');

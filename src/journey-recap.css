@@ -1,0 +1,128 @@
+.journey-recap {
+  margin: 17px 0;
+  text-align: center;
+}
+
+.recap-friends {
+  padding: 11px 9px 12px;
+  border: 1px solid #e2d098;
+  border-radius: 14px;
+  background: #fff3d5;
+}
+
+.recap-title {
+  color: #6d5424;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.recap-friend-list {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 7px;
+}
+
+.recap-friend-list > div {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 0;
+}
+
+.recap-friend-list strong {
+  color: #594724;
+  font-size: 12px;
+}
+
+.recap-friend-list span {
+  margin-top: 2px;
+  color: #66512b;
+  font-size: 11px;
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+}
+
+.journey-recap .goal-route-memory {
+  margin-top: 10px;
+  padding: 10px 13px;
+}
+
+.journey-recap .goal-route-memory > span {
+  font-size: 12px;
+  font-weight: 700;
+  color: #4c6647;
+}
+
+.recap-routes {
+  list-style: none;
+  padding: 0;
+  margin: 6px 0 0;
+  display: grid;
+  gap: 4px;
+}
+
+.recap-routes li {
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.recap-routes li > span {
+  flex: 0 0 auto;
+  color: #566a48;
+  font-size: 11px;
+}
+
+.recap-routes strong {
+  min-width: 0;
+  color: #35543c;
+}
+
+.journey-recap .recap-participation {
+  margin: 14px 0 0;
+  font-size: 12px;
+  line-height: 1.7;
+  font-weight: 700;
+  color: #3c5b40;
+}
+
+.journey-recap .goal-party {
+  gap: 8px;
+  margin: 8px 0 12px;
+}
+
+.journey-recap .goal-party > div {
+  flex: 1 1 0;
+  min-width: 0;
+  max-width: 110px;
+  padding: 7px 2px;
+  border-radius: 12px;
+  background: #f1f3e7;
+}
+
+.journey-recap .goal-party small {
+  font-size: 12px;
+  font-weight: 800;
+  color: #45603f;
+}
+
+.recap-player-name {
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.journey-recap .goal-party strong {
+  font-size: 11px;
+  line-height: 1.8;
+}
+
+.journey-recap .recap-next-trip {
+  padding: 9px 10px;
+  border-top: 1px dashed #d3dac7;
+  color: #4c6647;
+  font-size: 12px;
+  line-height: 1.8;
+}
