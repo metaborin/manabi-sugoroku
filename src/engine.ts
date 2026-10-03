@@ -12,7 +12,7 @@ interface QuestionInfo {
 }
 
 export interface GameState {
-  version: 1;
+  version: 2;
   bankSignature: string;
   seed: number;
   token: number;
@@ -34,6 +34,8 @@ export interface GameState {
   feedback: 'correct' | 'explained' | null;
   eventKind: EventKind | null;
   rescues: number;
+  /** Completed actions in the current checkpoint rescue; 3 means it is complete. */
+  rescueProgress: number;
   routes: Route[];
   /** Per-player deterministic decks; these contain only eligible questions. */
   decks: QuestionInfo[][];
@@ -50,6 +52,7 @@ export type GameAction = Guard & (
   | { type: 'exchange' }
   | { type: 'reveal' }
   | { type: 'continue' }
+  | { type: 'rescue'; step: number }
   | { type: 'next'; route?: Route }
 );
 
@@ -113,15 +116,20 @@ export function createGame(players: readonly Player[], questions: readonly Quest
     }));
   });
   return {
-    version: 1, bankSignature: bankSignature(questions), seed: normalizedSeed, token: 0,
+    version: 2, bankSignature: bankSignature(questions), seed: normalizedSeed, token: 0,
     players: players.map(player => ({ ...player, units: [...player.units] })),
     phase: 'roll', turnIndex: 0, turnsCompleted: 0, totalTurns,
     completedByPlayer: players.map(() => 0),
     position: 0, goalPosition: rolls.reduce((sum, roll) => sum + roll, 0), dice: null, rolls,
     questionId: null, attempts: 0, hintUsed: false, helpUsed: false,
-    selectedChoice: null, feedback: null, eventKind: null, rescues: 0, routes: [],
+    selectedChoice: null, feedback: null, eventKind: null, rescues: 0, rescueProgress: 0, routes: [],
     decks, usedQuestionIds: players.map(() => []),
   };
+}
+
+/** Rescue markers sit on the spaces reached by the fourth, eighth and last dice rolls. */
+export function checkpointPositions(state: Pick<GameState, 'rolls'>): number[] {
+  return [4, 8, 12].map(turn => state.rolls.slice(0, turn).reduce((sum, roll) => sum + roll, 0));
 }
 
 export function getQuestion(state: GameState, questions: readonly Question[]): Question | undefined {
@@ -195,12 +203,20 @@ export function reducer(state: GameState, action: GameAction): GameState {
       const turnsCompleted = state.turnsCompleted + 1;
       const completedByPlayer = state.completedByPlayer.map((count, index) => count + (index === state.turnIndex ? 1 : 0));
       next = { ...state, phase: 'event', turnsCompleted, completedByPlayer,
-        rescues: Math.floor(turnsCompleted / 4),
+        rescueProgress: 0,
         eventKind: turnsCompleted === state.totalTurns ? 'final' : turnsCompleted % 4 === 0 ? 'route' : 'rest' };
+      break;
+    }
+    case 'rescue': {
+      if (state.phase !== 'event' || (state.eventKind !== 'route' && state.eventKind !== 'final') ||
+          state.rescueProgress >= 3 || action.step !== state.rescueProgress) break;
+      const rescueProgress = state.rescueProgress + 1;
+      next = { ...state, rescueProgress, rescues: state.rescues + (rescueProgress === 3 ? 1 : 0) };
       break;
     }
     case 'next': {
       if (state.phase !== 'event') break;
+      if ((state.eventKind === 'route' || state.eventKind === 'final') && state.rescueProgress !== 3) break;
       if (state.eventKind === 'route' && action.route !== 'forest' && action.route !== 'river') break;
       const routes = state.eventKind === 'route'
         ? [...state.routes, action.route!]
@@ -209,7 +225,7 @@ export function reducer(state: GameState, action: GameAction): GameState {
         ? { ...state, phase: 'goal', routes }
         : { ...state, phase: 'roll', turnIndex: (state.turnIndex + 1) % state.players.length,
           dice: null, questionId: null, attempts: 0, hintUsed: false, helpUsed: false,
-          selectedChoice: null, feedback: null, eventKind: null, routes };
+          selectedChoice: null, feedback: null, eventKind: null, rescueProgress: 0, routes };
       break;
     }
   }
@@ -225,7 +241,7 @@ function integer(value: unknown, minimum: number, maximum: number): value is num
 
 /** Validate a local snapshot against the current fixed bank; corrupt/incompatible saves return null. */
 export function restoreGame(snapshot: unknown, questions: readonly Question[]): GameState | null {
-  if (!isRecord(snapshot) || snapshot.version !== 1 || !Array.isArray(snapshot.players) ||
+  if (!isRecord(snapshot) || (snapshot.version !== 1 && snapshot.version !== 2) || !Array.isArray(snapshot.players) ||
       !integer(snapshot.seed, 0, 0xFFFFFFFF) || !integer(snapshot.token, 0, Number.MAX_SAFE_INTEGER)) return null;
   let base: GameState;
   try { base = createGame(snapshot.players as Player[], questions, snapshot.seed); } catch { return null; }
@@ -281,12 +297,20 @@ export function restoreGame(snapshot: unknown, questions: readonly Question[]): 
     routes.push(route);
   }
   const eventKind = completedPhase ? completed === base.totalTurns ? 'final' : completed % 4 === 0 ? 'route' : 'rest' : null;
-  if (snapshot.eventKind !== eventKind || snapshot.rescues !== Math.floor(completed / 4)) return null;
+  const checkpointEvent = phase === 'event' && (eventKind === 'route' || eventKind === 'final');
+  // Original saves awarded each rescue on arrival; preserve that progress on upgrade.
+  const rescueProgress = snapshot.version === 1
+    ? checkpointEvent || phase === 'goal' ? 3 : 0
+    : snapshot.rescueProgress;
+  if (!integer(rescueProgress, 0, 3) || (phase === 'goal' && rescueProgress !== 3) ||
+      (!checkpointEvent && phase !== 'goal' && rescueProgress !== 0)) return null;
+  const rescues = Math.floor(completed / 4) - (checkpointEvent && rescueProgress < 3 ? 1 : 0);
+  if (snapshot.eventKind !== eventKind || snapshot.rescues !== rescues) return null;
   const completedByPlayer = base.players.map((_, index) => Math.floor(completed / base.players.length) + (index < completed % base.players.length ? 1 : 0));
   if (JSON.stringify(snapshot.completedByPlayer) !== JSON.stringify(completedByPlayer)) return null;
   return { ...base, token: snapshot.token, phase, turnIndex: expectedIndex, turnsCompleted: completed,
     completedByPlayer, position, dice, questionId: questionId as string | null,
     attempts: snapshot.attempts, hintUsed: snapshot.hintUsed, helpUsed: snapshot.helpUsed,
     selectedChoice: selectedChoice as number | null, feedback: feedback as GameState['feedback'],
-    eventKind, rescues: Math.floor(completed / 4), routes, usedQuestionIds };
+    eventKind, rescues, rescueProgress, routes, usedQuestionIds };
 }

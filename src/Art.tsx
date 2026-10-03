@@ -7,6 +7,10 @@ export type BoardProps = {
   rescued: number;
   route: string;
   characters: number[];
+  checkpoints?: number[];
+  routes?: ('forest' | 'river')[];
+  moving?: boolean;
+  rescueProgress?: number;
 };
 
 const animalNames = ['きつね', 'うさぎ', 'くま', 'ねこ'];
@@ -69,7 +73,7 @@ export function Animal({ kind, size = 88, className }: AnimalProps) {
   );
 }
 
-function CaravanGlyph({ characters }: { characters: number[] }) {
+function CaravanGlyph({ characters, rescued = 0 }: { characters: number[]; rescued?: number }) {
   const passengers = characters.length ? characters.slice(0, 4) : [0];
   return (
     <g stroke={ink} strokeWidth="2.3" strokeLinejoin="round">
@@ -81,7 +85,7 @@ function CaravanGlyph({ characters }: { characters: number[] }) {
       <path d="M33 39 L29 71 M137 38 L140 71" fill="none" stroke="#755d40" strokeWidth="4" />
       {passengers.map((kind, index) => (
         <g key={index} transform={`translate(${passengers.length === 1 ? 63 : 31 + index * (82 / Math.max(1, passengers.length - 1))} 35) scale(.43)`}>
-          <AnimalGlyph kind={kind} />
+          <g className="wagon-passenger"><AnimalGlyph kind={kind} /></g>
         </g>
       ))}
       <path d="M17 76 Q84 84 153 74 L152 90 Q86 102 18 91Z" fill="#f6c451" />
@@ -90,6 +94,14 @@ function CaravanGlyph({ characters }: { characters: number[] }) {
       <circle cx="128" cy="99" r="12" fill="#665348" /><circle cx="128" cy="99" r="5" fill="#dac49a" stroke="none" />
       <path d="M154 88 H165 Q171 88 173 83" fill="none" strokeLinecap="round" />
       <path d="M78 82 L84 74 90 82 87 91 80 91Z" fill="#fff2bd" stroke="#a77d36" strokeWidth="1.5" />
+      {rescued > 0 && <g transform="translate(-44 83)">
+        <path d="M32 12 H58" stroke="#7e6245" strokeWidth="3" />
+        <rect x="-34" y="-6" width="75" height="26" rx="7" fill="#82af91" />
+        {Array.from({ length: Math.min(3, rescued) }, (_, index) => <g key={index} transform={`translate(${-18 + index * 22} -3) scale(.42)`}><Friend index={index} saved={false} /></g>)}
+        <path d="M-33 4 H39 V17 Q3 25 -33 17Z" fill="#9ac49d" />
+        <circle cx="-19" cy="22" r="7" fill="#665348" /><circle cx="26" cy="22" r="7" fill="#665348" />
+        <circle cx="-19" cy="22" r="2.5" fill="#e8d6a4" stroke="none" /><circle cx="26" cy="22" r="2.5" fill="#e8d6a4" stroke="none" />
+      </g>}
     </g>
   );
 }
@@ -135,38 +147,66 @@ function House({ x, y, scale = 1, color = '#cd8062' }: { x: number; y: number; s
 }
 
 type Point = { x: number; y: number };
-const segments: [Point, Point, Point, Point][] = [
-  [{ x: 97, y: 465 }, { x: 196, y: 442 }, { x: 352, y: 493 }, { x: 446, y: 443 }],
-  [{ x: 446, y: 443 }, { x: 560, y: 383 }, { x: 756, y: 434 }, { x: 729, y: 338 }],
-  [{ x: 729, y: 338 }, { x: 706, y: 271 }, { x: 491, y: 334 }, { x: 382, y: 327 }],
-  [{ x: 382, y: 327 }, { x: 251, y: 320 }, { x: 164, y: 278 }, { x: 233, y: 214 }],
-  [{ x: 233, y: 214 }, { x: 302, y: 151 }, { x: 420, y: 176 }, { x: 494, y: 196 }],
-  [{ x: 494, y: 196 }, { x: 588, y: 221 }, { x: 699, y: 248 }, { x: 762, y: 171 }],
-  [{ x: 762, y: 171 }, { x: 778, y: 154 }, { x: 796, y: 136 }, { x: 796, y: 102 }],
-];
-const pathData = 'M97 465 C196 442 352 493 446 443 C560 383 756 434 729 338 C706 271 491 334 382 327 C251 320 164 278 233 214 C302 151 420 176 494 196 C588 221 699 248 762 171 C778 154 796 136 796 102';
-const routePoints: (Point & { distance: number })[] = [];
-let pathLength = 0;
-for (const segment of segments) {
-  for (let n = 0; n <= 40; n += 1) {
-    const t = n / 40;
-    const u = 1 - t;
-    const point = {
-      x: u ** 3 * segment[0].x + 3 * u ** 2 * t * segment[1].x + 3 * u * t ** 2 * segment[2].x + t ** 3 * segment[3].x,
-      y: u ** 3 * segment[0].y + 3 * u ** 2 * t * segment[1].y + 3 * u * t ** 2 * segment[2].y + t ** 3 * segment[3].y,
-    };
-    const previous = routePoints.at(-1);
-    if (previous) pathLength += Math.hypot(point.x - previous.x, point.y - previous.y);
-    routePoints.push({ ...point, distance: pathLength });
+type Curve = [Point, Point, Point, Point];
+type Trail = { data: string; points: (Point & { distance: number })[]; length: number };
+
+// Each chapter ends at its rescue square. Dice distances are distributed within
+// that chapter, so neither a random roll nor a route choice moves a rescue flag.
+function makeTrail(curves: Curve[]): Trail {
+  const points: Trail['points'] = [];
+  let length = 0;
+  for (const curve of curves) {
+    for (let n = 0; n <= 40; n += 1) {
+      const t = n / 40;
+      const u = 1 - t;
+      const point = {
+        x: u ** 3 * curve[0].x + 3 * u ** 2 * t * curve[1].x + 3 * u * t ** 2 * curve[2].x + t ** 3 * curve[3].x,
+        y: u ** 3 * curve[0].y + 3 * u ** 2 * t * curve[1].y + 3 * u * t ** 2 * curve[2].y + t ** 3 * curve[3].y,
+      };
+      const previous = points.at(-1);
+      if (previous) length += Math.hypot(point.x - previous.x, point.y - previous.y);
+      points.push({ ...point, distance: length });
+    }
   }
+  const start = curves[0][0];
+  return { points, length, data: `M${start.x} ${start.y} ${curves.map(curve => `C${curve.slice(1).map(p => `${p.x} ${p.y}`).join(' ')}`).join(' ')}` };
 }
 
-function onPath(fraction: number): Point {
-  const distance = Math.min(1, Math.max(0, fraction)) * pathLength;
-  const next = routePoints.findIndex((point) => point.distance >= distance);
-  if (next <= 0) return routePoints[0];
-  const a = routePoints[next - 1];
-  const b = routePoints[next];
+const meadowTrail = makeTrail([
+  [{ x: 97, y: 465 }, { x: 196, y: 442 }, { x: 352, y: 493 }, { x: 446, y: 443 }],
+  [{ x: 446, y: 443 }, { x: 560, y: 383 }, { x: 756, y: 434 }, { x: 729, y: 338 }],
+]);
+const chapterTrails = [
+  {
+    forest: makeTrail([
+      [{ x: 729, y: 338 }, { x: 676, y: 275 }, { x: 541, y: 285 }, { x: 414, y: 290 }],
+      [{ x: 414, y: 290 }, { x: 300, y: 288 }, { x: 190, y: 267 }, { x: 233, y: 214 }],
+    ]),
+    river: makeTrail([
+      [{ x: 729, y: 338 }, { x: 671, y: 386 }, { x: 521, y: 349 }, { x: 406, y: 351 }],
+      [{ x: 406, y: 351 }, { x: 283, y: 352 }, { x: 164, y: 280 }, { x: 233, y: 214 }],
+    ]),
+  },
+  {
+    forest: makeTrail([
+      [{ x: 233, y: 214 }, { x: 265, y: 159 }, { x: 352, y: 134 }, { x: 430, y: 139 }],
+      [{ x: 430, y: 139 }, { x: 555, y: 142 }, { x: 665, y: 150 }, { x: 724, y: 123 }],
+      [{ x: 724, y: 123 }, { x: 757, y: 109 }, { x: 779, y: 104 }, { x: 796, y: 102 }],
+    ]),
+    river: makeTrail([
+      [{ x: 233, y: 214 }, { x: 316, y: 174 }, { x: 401, y: 216 }, { x: 493, y: 220 }],
+      [{ x: 493, y: 220 }, { x: 604, y: 242 }, { x: 718, y: 230 }, { x: 754, y: 171 }],
+      [{ x: 754, y: 171 }, { x: 774, y: 138 }, { x: 789, y: 125 }, { x: 796, y: 102 }],
+    ]),
+  },
+];
+
+function onTrail(trail: Trail, fraction: number): Point {
+  const distance = Math.min(1, Math.max(0, fraction)) * trail.length;
+  const next = trail.points.findIndex(point => point.distance >= distance);
+  if (next <= 0) return trail.points[0];
+  const a = trail.points[next - 1];
+  const b = trail.points[next];
   const ratio = (distance - a.distance) / Math.max(0.001, b.distance - a.distance);
   return { x: a.x + (b.x - a.x) * ratio, y: a.y + (b.y - a.y) * ratio };
 }
@@ -209,31 +249,40 @@ export function RescueAnimal({ kind, size = 88 }: { kind: number; size?: number 
   </svg>;
 }
 
-export function Board({ position, totalDistance, rescued, route, characters }: BoardProps) {
+export function Board({ position, totalDistance, rescued, route, characters, checkpoints, routes, moving = false, rescueProgress = 0 }: BoardProps) {
   const uid = useId().replace(/:/g, '');
-  const distance = Math.max(1, Math.round(totalDistance));
+  const distance = Math.max(3, Math.round(totalDistance));
   const progress = Math.max(0, Math.min(distance, position));
-  const wagon = onPath(progress / distance);
-  const count = Math.min(60, distance);
-  const riverRoute = route === 'river';
+  const chapterEnds = checkpoints?.length === 3 && checkpoints[0] > 0 && checkpoints[1] > checkpoints[0] && checkpoints[1] < distance
+    ? [checkpoints[0], checkpoints[1], distance]
+    : [Math.floor(distance / 3), Math.floor(distance * 2 / 3), distance];
+  const selectedRoutes = routes ?? [route === 'river' ? 'river' : 'forest', route === 'river' ? 'river' : 'forest'];
+  const trails = [meadowTrail, chapterTrails[0][selectedRoutes[0] ?? 'forest'], chapterTrails[1][selectedRoutes[1] ?? 'forest']];
+  const place = (value: number) => {
+    const chapter = Math.max(0, chapterEnds.findIndex(end => value <= end));
+    const start = chapter === 0 ? 0 : chapterEnds[chapter - 1];
+    return onTrail(trails[chapter], (value - start) / (chapterEnds[chapter] - start));
+  };
+  const wagon = place(progress);
   const friends = [
-    { x: 529, y: 477, label: 'りす', flag: 1 },
-    { x: 448, y: 262, label: 'ふくろう', flag: 2 },
-    { x: 428, y: 112, label: 'はりねずみ', flag: 3 },
+    { x: 821, y: 386, square: { x: 729, y: 338 }, label: 'りす', chapter: 0 },
+    { x: 132, y: 270, square: { x: 233, y: 214 }, label: 'ふくろう', chapter: 1 },
+    { x: 847, y: 201, square: { x: 796, y: 102 }, label: 'はりねずみ', chapter: 2 },
   ];
+  const cappedRescued = Math.max(0, Math.min(3, rescued));
   return <svg
-    className="adventure-board"
+    className={`adventure-board${moving ? ' is-moving' : ''}`}
     width="100%"
     viewBox="0 0 900 570"
     role="img"
-    aria-label={`ぼうけんの ちず。${distance}マスの うち ${progress}マス。ともだちを ${rescued}ひき たすけたよ。`}
+    aria-label={`ぼうけんの ちず。${distance}マスの うち ${progress}マス。ともだちを ${cappedRescued}ひき たすけた。${selectedRoutes.map((choice, index) => `${index + 2}つめの みちは ${choice === 'river' ? 'かわ' : 'もり'}`).join('。')}`}
     style={{ display: 'block', overflow: 'visible' }}
   >
     <defs>
-      <linearGradient id={`${uid}-land`} x1="0" y1="0" x2="0" y2="1"><stop stopColor="#e1edcf" /><stop offset="1" stopColor="#b9d49e" /></linearGradient>
-      <linearGradient id={`${uid}-water`} x1="0" y1="0" x2="1" y2="1"><stop stopColor="#a3d9d7" /><stop offset="1" stopColor="#78bfc8" /></linearGradient>
-      <filter id={`${uid}-shadow`} x="-60%" y="-60%" width="220%" height="220%"><feDropShadow dx="0" dy="3" stdDeviation="2.4" floodColor="#50623b" floodOpacity=".16" /></filter>
-      <clipPath id={`${uid}-map-clip`}><rect x="0" y="0" width="900" height="570" rx="26" /></clipPath>
+      <linearGradient id={`${uid}-land`} x1="0" y1="0" x2="0" y2="1"><stop stopColor="#e2edcf" /><stop offset="1" stopColor="#b9d49e" /></linearGradient>
+      <linearGradient id={`${uid}-water`} x1="0" y1="0" x2="1" y2="1"><stop stopColor="#b0ded6" /><stop offset="1" stopColor="#76bfca" /></linearGradient>
+      <filter id={`${uid}-shadow`} x="-100%" y="-60%" width="280%" height="220%"><feDropShadow dx="0" dy="3" stdDeviation="2" floodColor="#50623b" floodOpacity=".16" /></filter>
+      <clipPath id={`${uid}-map-clip`}><rect width="900" height="570" rx="26" /></clipPath>
     </defs>
     <g clipPath={`url(#${uid}-map-clip)`}>
       <rect width="900" height="570" rx="26" fill={`url(#${uid}-land)`} />
@@ -241,106 +290,119 @@ export function Board({ position, totalDistance, rescued, route, characters }: B
       <path d="M-50 156 Q71 119 161 144 Q267 173 280 112 Q385 35 545 120 Q696 158 928 86" stroke="#c2dcaa" strokeWidth="40" fill="none" />
       <path d="M-48 432 Q124 373 258 420 T471 475 T710 460 T933 477 V601 H-48Z" fill="#bad49c" />
       <path d="M-49 559 Q115 498 252 542 T531 526 T933 536" stroke="#aeca8d" strokeWidth="42" fill="none" />
-      <path d="M691 -40 C758 72 661 119 694 209 S846 315 794 405 S733 517 777 611" stroke="#dbe7bb" strokeWidth="92" fill="none" />
-      <path d="M691 -40 C758 72 661 119 694 209 S846 315 794 405 S733 517 777 611" stroke={`url(#${uid}-water)`} strokeWidth="66" fill="none" />
-      <g stroke="#d3efdf" strokeWidth="3" strokeLinecap="round" fill="none" opacity=".8">
-        <path d="M704 39 L720 43 M685 105 L701 109 M704 243 L725 252 M781 323 L803 329 M773 425 L789 418 M741 512 L762 512" />
-        <path d="M700 45 L711 48 M695 111 L708 114 M716 260 L731 265 M783 337 L795 341 M769 438 L780 434 M746 520 L764 520" />
-      </g>
-      <ellipse cx="80" cy="189" rx="64" ry="27" fill="#c3dca6" />
-      <ellipse cx="426" cy="260" rx="107" ry="29" fill="#cbe0ad" />
-      <ellipse cx="603" cy="359" rx="94" ry="16" fill="#afd093" opacity=".6" />
-      <g opacity=".65" fill="#87af73">
-        <path d="M111 318 l-5 -10 9 5 4 -11 4 12 8 -4 -4 9Z M332 102 l-5 -8 8 3 4 -8 3 10 7 -4 -3 8Z M574 495 l-5 -8 9 4 4 -9 3 11 7 -5 -3 9Z M837 255 l-5 -8 9 3 3 -8 4 11 7 -4 -3 8Z" />
-      </g>
-      <Tree x={56} y={124} scale={1.02} /><Tree x={120} y={109} scale={.8} kind={1} />
-      <Tree x={165} y={156} scale={.85} /><Tree x={49} y={292} scale={.72} kind={1} />
-      <Tree x={92} y={278} scale={.86} /><Tree x={369} y={115} scale={.73} />
-      <Tree x={574} y={114} scale={.85} kind={1} /><Tree x={619} y={94} scale={.95} />
-      <Tree x={851} y={182} scale={.79} kind={1} /><Tree x={871} y={330} scale={1.03} />
-      <Tree x={841} y={487} scale={.8} kind={1} />
-      <House x={72} y={385} scale={.78} /><House x={117} y={392} scale={.47} color="#d7a552" />
-      <g transform="translate(349 253)">
-        <path d="M-30 12 Q-29 -3 -13 -6 Q1 -18 13 -2 Q30 -6 34 13Z" fill="#83ac74" />
-        <path d="M-14 8 Q-13 -1 -4 -4 Q6 -7 12 6" fill="#a8c78e" />
-      </g>
-      <g transform="translate(485 113) rotate(-8)">
-        <path d="M-28 2 Q-28 -9 -10 -9 H17 Q29 -9 29 2 V12 H-28Z" fill="#d2ab72" stroke="#957e54" strokeWidth="2" />
-        <path d="M-20 10 V22 M18 10 V22 M-30 3 H30" stroke="#8b7450" strokeWidth="3" />
-        <path d="M-8 -10 V-21 M-2 -10 V-18 M5 -10 V-23 M12 -10 V-19" stroke="#9cab7a" strokeWidth="4" />
-      </g>
-      <g fill="none" strokeLinecap="round">
-        <path d={pathData} stroke="#8f9e70" strokeWidth="43" opacity=".16" transform="translate(0 4)" />
-        <path d={pathData} stroke="#d7c8a1" strokeWidth="42" />
-        <path d={pathData} stroke="#fff0cf" strokeWidth="35" />
-        <path d={pathData} stroke="#fff9e8" strokeWidth="24" opacity=".55" />
-      </g>
-      <g transform="translate(709 210) rotate(-24)" stroke="#947043" strokeWidth="2">
-        <rect x="-43" y="-24" width="86" height="48" rx="3" fill="#c89964" />
-        {[-34, -22, -10, 2, 14, 26, 38].map((x) => <path key={x} d={`M${x} -21 V21`} />)}
-        <path d="M-46 -25 H46 M-46 25 H46" stroke="#b28653" strokeWidth="6" strokeLinecap="round" />
-        <path d="M-43 -32 V-18 M43 -32 V-18 M-43 19 V33 M43 19 V33" stroke="#7a6548" strokeWidth="5" strokeLinecap="round" />
-      </g>
-      <g fontFamily="'Noto Sans JP', 'Yu Gothic', sans-serif" fontWeight="800" textAnchor="middle">
-        {Array.from({ length: count + 1 }, (_, i) => {
-          const value = Math.round(i * distance / count);
-          const p = onPath(i / count);
-          const complete = value <= progress;
-          const special = i > 0 && i < count && [1, 2, 3].some((n) => Math.round(count * n / 4) === i);
-          return <g key={i} transform={`translate(${p.x} ${p.y})`}>
-            <circle r={i === 0 || i === count ? 18 : count > 32 ? 9 : 12.5} fill={complete ? '#f6c970' : '#fffaf0'} stroke={complete ? '#b3914c' : '#d3c297'} strokeWidth="1.5" />
-            {special || i === count ? <path d="M0 -7 L2 -2 8 -2 3 2 4 7 0 4 -4 7 -3 2 -8 -2 -2 -2Z" fill={complete ? '#a5712b' : '#b4a475'} /> : <text y="4" fill={complete ? '#76572a' : '#867b61'} fontSize={count > 32 ? 9 : 11}>{value}</text>}
+      <path d="M782 -40 C838 83 756 176 804 262 S864 427 777 611" stroke="#dfebc4" strokeWidth="73" fill="none" />
+      <path d="M782 -40 C838 83 756 176 804 262 S864 427 777 611" stroke={`url(#${uid}-water)`} strokeWidth="51" fill="none" />
+      <g stroke="#e3f3e2" strokeWidth="3" strokeLinecap="round" fill="none" opacity=".85"><path d="M787 18 L802 21 M787 180 L801 184 M814 283 L832 285 M815 445 L831 438 M784 514 L800 508" /></g>
+      <Tree x={47} y={123} scale={1.02} /><Tree x={113} y={107} scale={.76} kind={1} />
+      <Tree x={169} y={152} scale={.8} /><Tree x={54} y={279} scale={.64} kind={1} />
+      <Tree x={873} y={318} scale={.6} kind={1} /><Tree x={875} y={503} scale={.8} />
+      <House x={71} y={386} scale={.77} /><House x={119} y={393} scale={.48} color="#d7a552" />
+
+      {selectedRoutes[0] === 'river' ? <g data-landscape="chapter-2-river">
+        <path d={trails[1].data} stroke="#d9e7be" strokeWidth="96" fill="none" strokeLinecap="round" />
+        <path d={trails[1].data} stroke={`url(#${uid}-water)`} strokeWidth="80" fill="none" strokeLinecap="round" />
+        <g fill="#7cab79" stroke="#527e64" strokeWidth="1.2">
+          <path d="M310 322 A14 6 0 1 1 324 315 L310 322Z" /><path d="M485 322 A16 6 0 1 1 502 316 L485 322Z" /><path d="M601 330 A13 5 0 1 1 614 324 L601 330Z" />
+        </g>
+        <Flower x={490} y={310} color="#f0acc0" /><Flower x={315} y={310} color="#fff1cc" />
+        <g stroke="#dff2e8" strokeWidth="2" strokeLinecap="round"><path d="M379 317 h18 M540 389 h19 M599 306 h15 M268 291 h13" /></g>
+      </g> : <g data-landscape="chapter-2-forest">
+        <ellipse cx="449" cy="333" rx="238" ry="57" fill="#a5c990" opacity=".6" />
+        <Tree x={300} y={374} scale={.61} /><Tree x={347} y={355} scale={.43} kind={1} />
+        <Tree x={555} y={371} scale={.62} kind={1} /><Tree x={606} y={362} scale={.47} />
+        <g transform="translate(449 340)" stroke="#997953" strokeWidth="1.6">
+          <path d="M-22 13 V-5 H-12 V13 M10 15 V-2 H18 V15" fill="#fff0cb" />
+          <path d="M-36 -5 Q-26 -34 -17 -30 Q-2 -29 2 -5Z" fill="#d69568" />
+          <path d="M0 -2 Q12 -23 20 -18 Q27 -14 30 -2Z" fill="#e5b170" />
+          <circle cx="-21" cy="-18" r="4" fill="#fff0cf" stroke="none" /><circle cx="17" cy="-10" r="3" fill="#fff0cf" stroke="none" />
+        </g>
+      </g>}
+      {selectedRoutes[1] === 'river' ? <g data-landscape="chapter-3-river">
+        <path d={trails[2].data} stroke="#dce8bd" strokeWidth="91" fill="none" strokeLinecap="round" />
+        <path d={trails[2].data} stroke={`url(#${uid}-water)`} strokeWidth="76" fill="none" strokeLinecap="round" />
+        <g transform="translate(564 180)">
+          <path d="M-25 0 H29 L18 14 H-10Z" fill="#deab6f" stroke="#876b45" strokeWidth="1.8" />
+          <path d="M0 -30 V2 M3 -28 L23 -4 H3Z" fill="#fff2ce" stroke="#8e7954" strokeWidth="1.6" />
+          <path d="M-18 22 H19" stroke="#e2f1e4" strokeWidth="3" strokeLinecap="round" />
+        </g>
+        <g transform="translate(414 175)" fill="#e9a568" stroke="#a7764f" strokeWidth="1.4"><path d="M-12 0 Q0 -12 13 0 Q1 13 -12 0 L-20 7 V-7Z" /><circle cx="8" cy="-2" r="1.5" fill="#514b37" stroke="none" /></g>
+        <g stroke="#e1f3e7" strokeWidth="2.5" strokeLinecap="round"><path d="M337 170 h17 M627 190 h15 M663 252 h14" /></g>
+      </g> : <g data-landscape="chapter-3-forest">
+        <ellipse cx="484" cy="121" rx="197" ry="61" fill="#b4d297" />
+        <Tree x={320} y={107} scale={.58} kind={1} /><Tree x={377} y={106} scale={.67} />
+        <Tree x={524} y={106} scale={.53} kind={1} /><Tree x={583} y={105} scale={.67} />
+        <path d="M416 134 Q427 86 451 88 Q477 87 489 137" stroke="#75a771" strokeWidth="20" fill="none" />
+        <path d="M420 139 Q434 96 451 95 Q472 98 484 143" stroke="#5f875b" strokeWidth="4" fill="none" />
+        <g transform="translate(617 75)"><path d="M0 0 Q-19 -19 -20 -5 Q-23 7 -4 6 Q-10 21 1 18 Q9 12 3 5 Q24 7 22 -6 Q18 -18 2 0Z" fill="#e0ae60" /><path d="M0 -2 L3 13" stroke="#8d7550" strokeWidth="2" strokeLinecap="round" /></g>
+      </g>}
+
+      <g fill="none" strokeLinecap="round" strokeLinejoin="round">
+        {routes && chapterTrails.map((options, index) => !routes[index] && <path key={`possible-${index}`} d={options.river.data} stroke="#678b73" strokeWidth="3" strokeDasharray="5 9" opacity=".38" />)}
+        {trails.map((trail, index) => {
+          const boardwalk = index > 0 && selectedRoutes[index - 1] === 'river';
+          return <g key={index} data-chapter-path={index + 1} data-route={index === 0 ? 'meadow' : selectedRoutes[index - 1] ?? 'forest'}>
+            <path d={trail.data} stroke="#819365" strokeWidth="45" opacity=".15" transform="translate(0 4)" />
+            <path d={trail.data} stroke={boardwalk ? '#9b7a52' : '#d2bd90'} strokeWidth="42" />
+            <path d={trail.data} stroke={boardwalk ? '#e6bf83' : '#fff0cf'} strokeWidth="35" />
+            {boardwalk ? <path d={trail.data} stroke="#ad875a" strokeWidth="33" strokeDasharray="2 13" strokeLinecap="butt" /> : <path d={trail.data} stroke="#fff9e8" strokeWidth="23" opacity=".55" />}
           </g>;
         })}
       </g>
-      <g transform="translate(112 500)" fontFamily="'Noto Sans JP', 'Yu Gothic', sans-serif">
-        <path d="M-43 -12 H60 L68 1 60 14 H-43Z" fill="#fff8e7" stroke="#c3ab7c" strokeWidth="1.6" />
-        <text x="10" y="5" textAnchor="middle" fill="#725a36" fontSize="14" fontWeight="800">しゅっぱつ</text>
+
+      <g fontFamily="'Noto Sans JP', 'Yu Gothic', sans-serif" fontWeight="800" textAnchor="middle">
+        {Array.from({ length: Math.min(60, distance) + 1 }, (_, index) => {
+          const value = Math.round(index * distance / Math.min(60, distance));
+          const p = place(value);
+          const complete = value <= progress;
+          const special = chapterEnds.includes(value);
+          return <g key={value} transform={`translate(${p.x} ${p.y})`} data-square={value} data-checkpoint={special || undefined}>
+            {special && <circle r="23" fill="#fff7d1" stroke="#c89543" strokeWidth="1.6" strokeDasharray="3 4" />}
+            <circle r={value === 0 || special ? 18 : 12.5} fill={complete ? '#f6c970' : '#fffaf0'} stroke={complete ? '#a47a33' : '#b7a17c'} strokeWidth="1.5" />
+            {special ? <><path d="M0 -12 L2 -7 8 -7 3 -3 4 2 0 -1 -4 2 -3 -3 -8 -7 -2 -7Z" fill={complete ? '#946629' : '#b19455'} /><text y="12" fill="#735c34" fontSize="10">{value}</text></> : <text y="4" fill={complete ? '#6e5026' : '#73644b'} fontSize="11">{value}</text>}
+          </g>;
+        })}
+
+        <g transform="translate(113 506)"><path d="M-50 -15 H48 L60 0 48 15 H-50Z" fill="#fff8e7" stroke="#b5a076" strokeWidth="1.6" /><text x="0" y="5" fill="#6a5432" fontSize="14">しゅっぱつ</text></g>
+        <g transform="translate(382 509)"><rect x="-77" y="-14" width="154" height="28" rx="12" fill="#e6edcf" /><text y="5" fill="#4d6846" fontSize="13">① はじまりの はら</text></g>
+        <g transform="translate(426 392)"><rect x="-88" y="-13" width="176" height="26" rx="13" fill="#f7f7dd" fillOpacity=".94" /><text y="5" fill="#496844" fontSize="13">② {selectedRoutes[0] === 'river' ? 'はすの いけの きばし' : 'こもれびの こみち'}</text></g>
+        <g transform="translate(458 41)"><rect x="-98" y="-14" width="196" height="28" rx="14" fill="#f7f7dd" fillOpacity=".94" /><text y="5" fill="#496844" fontSize="13">③ {selectedRoutes[1] === 'river' ? 'きらきらの かわぎし' : 'もりの トンネル'}</text></g>
       </g>
-      <g transform="translate(803 84)">
-        <House x={-44} y={-12} scale={.55} color="#b97c77" /><House x={30} y={-4} scale={.7} color="#c9855d" />
-        <path d="M-15 1 V-62" stroke="#88724f" strokeWidth="4" strokeLinecap="round" />
-        <path d="M-13 -61 Q2 -72 17 -60 V-39 Q2 -51 -13 -40Z" fill="#e5a45e" stroke="#a07146" strokeWidth="1.5" />
-        <path d="M-7 -55 L-3 -50 6 -57" stroke="#fff6d7" strokeWidth="3" fill="none" strokeLinecap="round" />
-        <rect x="-51" y="-5" width="93" height="27" rx="13.5" fill="#fff8e4" stroke="#beaa77" strokeWidth="1.5" />
-        <text x="-4" y="14" fill="#715937" fontSize="15" fontWeight="800" textAnchor="middle">ゴールの むら</text>
+
+      <g transform="translate(824 68)">
+        <House x={-20} y={-9} scale={.46} color="#b97c77" /><House x={38} y={2} scale={.57} color="#c9855d" />
+        <path d="M3 3 V-52" stroke="#88724f" strokeWidth="3.5" strokeLinecap="round" />
+        <path d="M5 -51 Q20 -61 32 -51 V-32 Q19 -40 5 -31Z" fill="#e5a45e" stroke="#a07146" strokeWidth="1.5" />
+        <path d="M11 -45 L15 -41 24 -47" stroke="#fff6d7" strokeWidth="2.5" fill="none" strokeLinecap="round" />
+        <rect x="-24" y="59" width="98" height="26" rx="13" fill="#fff8e4" stroke="#beaa77" strokeWidth="1.5" />
+        <text x="25" y="77" fill="#655030" fontSize="12" fontWeight="800" textAnchor="middle">ゴールの むら</text>
       </g>
-      {friends.map((friend, index) => <g key={friend.label} transform={`translate(${friend.x} ${friend.y})`}>
-        <ellipse cx="0" cy="15" rx="43" ry="13" fill="#9fbc80" opacity=".4" />
-        <path d="M-37 12 V-43" stroke="#9e7d52" strokeWidth="3.5" strokeLinecap="round" />
-        <path d="M-35 -42 H-3 L-10 -31 -3 -20 H-35Z" fill={rescued > index ? '#5d9674' : '#f4d186'} stroke="#a48d5f" strokeWidth="1.2" />
-        <text x="-21" y="-27" fill={rescued > index ? '#fffaf0' : '#735935'} textAnchor="middle" fontSize="14" fontWeight="800">{rescued > index ? '✓' : friend.flag}</text>
-        <g transform="translate(4 -3)"><Friend index={index} saved={rescued > index} /></g>
-        <rect x="-38" y="20" width="80" height="21" rx="10.5" fill="#fff8e7" opacity=".96" />
-        <text x="2" y="35" textAnchor="middle" fill="#665439" fontSize="12" fontWeight="800">{rescued > index ? 'ありがとう！' : friend.label}</text>
-      </g>)}
-      <g transform="translate(272 381)">
-        <path d="M-13 7 Q-16 -5 -3 -10 Q10 -9 12 8Z" fill="#9e9378" />
-        <path d="M-22 12 Q-24 2 -13 0 Q-2 2 -4 13Z" fill="#b5a888" />
-        <path d="M8 14 L5 5 11 7 14 0 18 9 23 7 20 14Z" fill="#86aa6e" />
-      </g>
-      <g transform="translate(572 280)">
-        <path d="M-10 9 V-5 H0 V9" fill="#f5e7b8" stroke="#a98659" strokeWidth="1.4" />
-        <path d="M-21 -5 Q-17 -28 -6 -27 Q7 -26 13 -5Z" fill="#d68b67" stroke="#aa7657" strokeWidth="1.5" />
-        <circle cx="-8" cy="-16" r="4" fill="#fff0cf" /><circle cx="3" cy="-10" r="3" fill="#fff0cf" />
-      </g>
-      {[{ x: 192, y: 515 }, { x: 212, y: 507 }, { x: 446, y: 367 }, { x: 461, y: 376 }, { x: 103, y: 188 }, { x: 514, y: 145 }, { x: 586, y: 523 }, { x: 816, y: 289 }].map((p, i) => <Flower key={i} {...p} color={i % 3 === 0 ? '#e99f8b' : '#f2d183'} />)}
-      <g transform="translate(502 34)">
-        <path d="M0 9 Q6 0 13 9 M13 9 Q19 1 25 9" fill="none" stroke="#789478" strokeWidth="2" strokeLinecap="round" />
-        <path d="M35 21 Q40 13 46 21 M46 21 Q52 14 57 21" fill="none" stroke="#789478" strokeWidth="2" strokeLinecap="round" />
-      </g>
-      {riverRoute ? <g transform="translate(783 469)">
-        <path d="M-12 -4 Q0 -18 12 -5 Q21 -2 12 5 Q0 15 -12 4 L-22 12 V-12Z" fill="#e9aa6e" stroke="#b7845b" strokeWidth="1.5" />
-        <circle cx="11" cy="-3" r="1.8" fill="#574d3d" />
-        <circle cx="26" cy="-16" r="3" stroke="#dff5e7" strokeWidth="2" fill="none" />
-      </g> : <g transform="translate(407 86)">
-        <path d="M0 0 Q-20 -21 -23 -5 Q-25 7 -4 6 Q-13 23 -1 20 Q9 14 3 5 Q26 8 24 -6 Q20 -20 2 0Z" fill="#dcac64" />
-        <path d="M0 -2 L3 13" stroke="#907b52" strokeWidth="2" strokeLinecap="round" />
-      </g>}
+
+      {friends.map((friend, index) => {
+        const saved = cappedRescued > index;
+        const atRescue = !saved && index === cappedRescued && progress === chapterEnds[index];
+        return <g key={friend.label} data-rescue-site={index + 1}>
+          <path d={`M${friend.square.x} ${friend.square.y} Q${friend.x} ${friend.square.y} ${friend.x} ${friend.y + 5}`} fill="none" stroke={saved ? '#669165' : '#a28955'} strokeWidth="3" strokeDasharray="4 5" />
+          <g transform={`translate(${friend.x} ${friend.y})`}>
+            <ellipse cy="16" rx="41" ry="12" fill="#8aad71" opacity=".35" />
+            {atRescue && <ellipse cy="2" rx="45" ry="34" fill="#fff0a4" fillOpacity=".6" stroke="#be8b37" strokeWidth="2" strokeDasharray="5 4" />}
+            <path d="M-39 12 V-43" stroke="#94764d" strokeWidth="3.5" strokeLinecap="round" />
+            <path d="M-37 -42 H-6 L-13 -31 -6 -20 H-37Z" fill={saved ? '#5a8970' : '#f4d186'} stroke="#9c8050" strokeWidth="1.2" />
+            {saved ? <path d="M-30 -31 L-24 -26 -16 -36" fill="none" stroke="#fff9df" strokeWidth="2.5" strokeLinecap="round" /> : <text x="-23" y="-27" fill="#6d502b" textAnchor="middle" fontSize="14" fontWeight="800">{index + 1}</text>}
+            {saved ? <g><circle cy="-4" r="17" fill="#fff7d3" stroke="#749163" strokeWidth="2" /><path d="M-9 -7 Q-10 -17 -1 -13 Q4 -18 10 -13 Q17 -6 -1 5Z" fill="#d99b71" stroke="#a37c55" strokeWidth="1.5" /></g> : <g transform="translate(4 -3)"><Friend index={index} saved={false} /></g>}
+            <rect x="-48" y="21" width="98" height="23" rx="11.5" fill="#fff8e7" stroke={atRescue ? '#b99344' : 'none'} />
+            <text x="1" y="37" textAnchor="middle" fill="#665032" fontSize="12" fontWeight="800">{saved ? 'ありがとう！' : friend.label}</text>
+            {atRescue && rescueProgress > 0 && <g transform="translate(-12 51)">{[0, 1, 2].map(n => <circle key={n} cx={n * 12} r="3.8" fill={n < rescueProgress ? '#bf8d3e' : '#faf4d8'} stroke="#a8874c" strokeWidth="1" />)}</g>}
+          </g>
+        </g>;
+      })}
+
+      <g transform="translate(265 404)"><path d="M-13 7 Q-16 -5 -3 -10 Q10 -9 12 8Z" fill="#9e9378" /><path d="M-22 12 Q-24 2 -13 0 Q-2 2 -4 13Z" fill="#b5a888" /></g>
+      {[{ x: 192, y: 532 }, { x: 212, y: 525 }, { x: 477, y: 477 }, { x: 496, y: 486 }, { x: 89, y: 175 }, { x: 175, y: 350 }, { x: 596, y: 523 }, { x: 858, y: 316 }].map((p, i) => <Flower key={i} {...p} color={i % 3 === 0 ? '#e59984' : '#f2d183'} />)}
+      <g transform="translate(257 61)" fill="none" stroke="#789478" strokeWidth="2" strokeLinecap="round"><path d="M0 9 Q6 0 13 9 M13 9 Q19 1 25 9 M35 21 Q40 13 46 21 M46 21 Q52 14 57 21" /></g>
       <g className="board-caravan" transform={`translate(${wagon.x - 67} ${wagon.y - 81}) scale(.8)`} filter={`url(#${uid}-shadow)`}>
-        <CaravanGlyph characters={characters} />
+        <g transform={progress > chapterEnds[0] && progress <= chapterEnds[1] ? 'translate(168 0) scale(-1 1)' : undefined}><CaravanGlyph characters={characters} rescued={cappedRescued} /></g>
       </g>
-      <Tree x={26} y={563} scale={1.06} /><Tree x={891} y={569} scale={.96} kind={1} />
+      <Tree x={24} y={563} scale={.94} /><Tree x={890} y={570} scale={.86} kind={1} />
     </g>
     <rect x="1" y="1" width="898" height="568" rx="25" fill="none" stroke="#8ba776" strokeOpacity=".3" strokeWidth="2" />
   </svg>;

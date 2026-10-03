@@ -1,0 +1,22 @@
+.rescue-activity{width:100%;text-align:left;color:#344b3e}
+.rescue-story{font-size:15px;line-height:1.9;margin:0 0 15px;overflow-wrap:anywhere}
+.rescue-scene{display:block;width:100%;height:auto;overflow:hidden;border-radius:16px;border:1px solid #d0dbc0;background:#e7efd4}
+.rescue-status{text-align:center;padding:13px 0 15px;min-height:87px}
+.rescue-status strong{font-size:12px;letter-spacing:.06em;display:inline-block;border-radius:20px;padding:2px 13px;color:#4f642e;background:#edf0d5}
+.rescue-status p{font-size:15px;font-weight:700;line-height:1.75;margin-top:7px;overflow-wrap:anywhere}
+.rescue-action{width:100%;min-height:58px;display:flex;align-items:center;justify-content:center;gap:9px;background:#285f4b;border:1px solid #285f4b;box-shadow:0 4px 0 #173f32;color:#fffdf3;padding:12px 10px;border-radius:13px;font-size:16px;font-weight:800;line-height:1.6;touch-action:manipulation}
+.rescue-action:hover{background:#1d513e}.rescue-action:active{transform:translateY(2px);box-shadow:0 2px 0 #173f32}
+.rescue-action:focus-visible{outline:3px solid #246ab8;outline-offset:4px}
+.rescue-action-number{display:grid;place-items:center;flex:0 0 26px;height:26px;background:#f6dfa0;color:#385139;border-radius:50%;font-size:14px}
+.rescue-earned{font-size:11px;line-height:1.8;color:#59674b;text-align:center;margin-top:19px}
+.rescue-tools{display:flex;gap:6px;list-style:none;margin:8px 0 2px;padding:0}
+.rescue-tools li{flex:1;min-width:0;text-align:center;padding:8px 2px 6px;font-size:11px;font-weight:700;border:1px solid #d3d8bd;border-radius:9px;background:#f7f3df;color:#6b5a30}
+.rescue-tools .rescue-tool-used{background:#e8f0dd;border-color:#b9cfa8;color:#395c35}
+.rescue-tool-state{display:block;font-size:9px;font-weight:500;line-height:1.8}
+.rescue-thanks{padding:15px 14px;margin:0 0 18px;background:#f7ecd0;border-radius:12px;font-size:15px;font-weight:700;line-height:1.9;text-align:center;color:#72552f}
+.rescue-friend-travel{transition:transform .75s ease-in-out}.rescue-basket-travel{transition:transform .45s ease-out}
+.rescue-leaves{transition:opacity .3s,transform .3s;transform-origin:380px 202px}.rescue-leaves-cleared{opacity:.2;transform:translate(49px,13px) scale(.75)}
+.rescue-sparkles{animation:rescue-twinkle .55s ease-out 2}.rescue-lantern-glow{animation:rescue-light .5s ease-out}
+@keyframes rescue-twinkle{0%{opacity:.25}55%{opacity:1}100%{opacity:.8}}@keyframes rescue-light{from{opacity:0}to{opacity:.18}}
+@media(max-width:440px){.rescue-story{font-size:14px}.rescue-action{font-size:15px;gap:7px}.rescue-status p{font-size:14px}.rescue-status{min-height:82px}.rescue-thanks{font-size:14px}}
+@media(prefers-reduced-motion:reduce){.rescue-activity *{animation:none!important;transition:none!important}}

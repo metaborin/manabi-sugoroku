@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createGame, eligibleQuestions, getQuestion, reducer, restoreGame } from '../src/engine.ts';
+import { checkpointPositions, createGame, eligibleQuestions, getQuestion, reducer, restoreGame } from '../src/engine.ts';
 import type { GameAction, GameState } from '../src/engine.ts';
 import type { Grade, Player, Question, Subject } from '../src/types.ts';
 
@@ -27,7 +27,14 @@ const arrive = (state: GameState): GameState => act(act(state, { type: 'roll' })
 const finishQuestion = (state: GameState): GameState => act(act(state, {
   type: 'answer', choice: getQuestion(state, questions)!.answer,
 }), { type: 'continue' });
-const nextTurn = (state: GameState): GameState => act(state, { type: 'next', route: 'forest' });
+const rescue = (state: GameState): GameState => {
+  let next = state;
+  if (next.phase === 'event' && (next.eventKind === 'route' || next.eventKind === 'final')) {
+    while (next.rescueProgress < 3) next = act(next, { type: 'rescue', step: next.rescueProgress });
+  }
+  return next;
+};
+const nextTurn = (state: GameState): GameState => act(rescue(state), { type: 'next', route: 'forest' });
 const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 
 for (const count of [1, 2, 3, 4]) {
@@ -50,12 +57,16 @@ for (const count of [1, 2, 3, 4]) {
       assert.equal(state.position, steps);
       state = finishQuestion(state);
       assert.equal(state.phase, 'event');
-      assert.equal(state.rescues, Math.floor((turn + 1) / 4));
+      assert.equal(state.rescues, Math.floor(turn / 4), 'arrival alone does not finish a rescue');
       if (turn === 3 || turn === 7) {
         assert.equal(state.eventKind, 'route');
+        assert.equal(state.position, checkpointPositions(state)[Math.floor(turn / 4)]);
+        assert.equal(act(state, { type: 'next', route: 'river' }), state, 'rescue must finish before leaving');
+        state = rescue(state);
         assert.equal(act(state, { type: 'next' }), state, 'a route event waits for the choice');
       }
       state = nextTurn(state);
+      assert.equal(state.rescues, Math.floor((turn + 1) / 4));
       assert.notEqual(state.phase, turn < 11 ? 'goal' : 'roll');
     }
     assert.equal(state.phase, 'goal');
@@ -210,6 +221,11 @@ test('snapshots round-trip at every phase, including interruptions and final rep
     state = act(state, { type: 'answer', choice: (question.answer + 1) % question.choices.length }); check();
     state = act(state, { type: 'answer', choice: question.answer }); check();
     state = act(state, { type: 'continue' }); check();
+    if (state.eventKind === 'route' || state.eventKind === 'final') {
+      for (const step of [0, 1, 2]) {
+        state = act(state, { type: 'rescue', step }); check();
+      }
+    }
     state = nextTurn(state); check();
   }
   const replay = createGame(state.players, questions, 4321);
@@ -229,6 +245,7 @@ test('corrupt, incompatible and stale-bank saves are rejected without crashing',
     { ...state, dice: 0 }, { ...state, completedByPlayer: [10, 0] },
     { ...state, rolls: [] }, { ...state, feedback: 'correct' },
     { ...state, selectedChoice: getQuestion(state, questions)!.answer },
+    { ...state, rescueProgress: 1 }, { ...state, rescueProgress: undefined },
   ];
   for (const corrupted of corruptions) assert.equal(restoreGame(corrupted, questions), null);
   const changedBank = clone(questions);
@@ -247,4 +264,95 @@ test('same seed and settings reproduce dice and questions, without mutating inpu
   assert.throws(() => createGame([], questions));
   assert.throws(() => createGame([player(), player()], questions));
   assert.throws(() => createGame([player(0, 3, { units: ['unavailable'] })], questions));
+});
+
+test('checkpoint markers follow actual dice totals for each four-turn chapter', () => {
+  assert.deepEqual(checkpointPositions({ rolls: [1, 2, 3, 1, 2, 3, 1, 2, 3, 1, 2, 3] }), [7, 15, 24]);
+  for (const seed of [0, 1, 42, 2026, 0xFFFFFFFF]) {
+    let state = createGame([player()], questions, seed);
+    const markers = checkpointPositions(state);
+    assert.equal(markers[2], state.goalPosition);
+    for (let turn = 1; turn <= 12; turn += 1) {
+      state = finishQuestion(arrive(state));
+      if (turn % 4 === 0) assert.equal(state.position, markers[turn / 4 - 1]);
+      state = nextTurn(state);
+    }
+  }
+});
+
+test('three distinct rescue actions finish a checkpoint once, and stale actions cannot skip steps or chapters', () => {
+  let state = createGame([player(), player(1, 6), player(2, 3)], questions, 8);
+  assert.equal(act(state, { type: 'rescue', step: 0 }), state, 'no rescue in roll phase');
+  for (let turn = 1; turn < 4; turn += 1) {
+    state = finishQuestion(arrive(state));
+    assert.equal(act(state, { type: 'rescue', step: 0 }), state, 'no rescue in ordinary events');
+    state = nextTurn(state);
+  }
+  state = finishQuestion(arrive(state));
+  assert.equal(state.rescues, 0);
+  assert.equal(state.rescueProgress, 0);
+  assert.equal(act(state, { type: 'next', route: 'forest' }), state);
+  for (const step of [-1, 1, 2, 3, 0.5, NaN]) assert.equal(act(state, { type: 'rescue', step }), state);
+  const oldAction: GameAction = { type: 'rescue', step: 0, token: state.token };
+  for (const step of [0, 1, 2]) {
+    const action: GameAction = { type: 'rescue', step, token: state.token };
+    state = reducer(state, action);
+    assert.equal(state.rescueProgress, step + 1);
+    assert.equal(state.rescues, step === 2 ? 1 : 0);
+    assert.equal(reducer(state, action), state, 'duplicate callback is ignored');
+    assert.equal(act(state, { type: 'rescue', step }), state, 'same step is ignored even with a new token');
+    if (step < 2) assert.equal(act(state, { type: 'next', route: 'river' }), state);
+  }
+  assert.equal(act(state, { type: 'rescue', step: 3 }), state);
+  state = act(state, { type: 'next', route: 'river' });
+  assert.equal(state.rescueProgress, 0);
+  assert.deepEqual(state.routes, ['river']);
+  for (let turn = 5; turn <= 8; turn += 1) {
+    state = finishQuestion(arrive(state));
+    if (turn < 8) state = nextTurn(state);
+  }
+  assert.equal(reducer(state, oldAction), state, 'a prior chapter cannot rescue in the current chapter');
+  assert.equal(state.rescues, 1);
+  assert.equal(state.rescueProgress, 0);
+});
+
+test('original version 1 saves migrate at every phase while preserving previously awarded rescues', () => {
+  let state = createGame([player(), player(1, 6)], questions, 123);
+  const checkLegacy = () => {
+    const legacy: Record<string, unknown> = { ...clone(state), version: 1, rescues: Math.floor(state.turnsCompleted / 4) };
+    delete legacy.rescueProgress;
+    const completedRescue = (state.phase === 'event' && (state.eventKind === 'route' || state.eventKind === 'final')) || state.phase === 'goal';
+    const restored = restoreGame(legacy, questions);
+    assert.deepEqual(restored, { ...state, rescues: Math.floor(state.turnsCompleted / 4), rescueProgress: completedRescue ? 3 : 0 });
+    if (completedRescue && state.phase === 'event') {
+      assert.notEqual(act(restored!, { type: 'next', route: 'forest' }).phase, 'event', 'old rescue needs no repeated actions');
+    }
+  };
+  checkLegacy();
+  for (let turn = 0; turn < 12; turn += 1) {
+    state = act(state, { type: 'roll' }); checkLegacy();
+    state = act(state, { type: 'moveComplete' }); checkLegacy();
+    state = act(state, { type: 'answer', choice: getQuestion(state, questions)!.answer }); checkLegacy();
+    state = act(state, { type: 'continue' }); checkLegacy();
+    state = nextTurn(state); checkLegacy();
+  }
+});
+
+test('save validation rejects inconsistent pending and completed rescues', () => {
+  let state = createGame([player()], questions, 7);
+  for (let turn = 1; turn <= 4; turn += 1) {
+    state = finishQuestion(arrive(state));
+    if (turn < 4) state = nextTurn(state);
+  }
+  for (const rescueProgress of [-1, 4, 0.5, undefined]) assert.equal(restoreGame({ ...state, rescueProgress }, questions), null);
+  assert.equal(restoreGame({ ...state, rescues: 1 }, questions), null, 'pending rescue cannot already be counted');
+  assert.equal(restoreGame({ ...state, rescueProgress: 3 }, questions), null, 'completed rescue must be counted');
+  state = rescue(state);
+  assert.equal(restoreGame({ ...state, rescues: 0 }, questions), null);
+  for (let turn = 5; turn <= 12; turn += 1) state = finishQuestion(arrive(nextTurn(state)));
+  assert.equal(act(state, { type: 'next' }), state, 'final rescue is required before goal');
+  state = nextTurn(state);
+  assert.equal(state.phase, 'goal');
+  assert.equal(restoreGame({ ...state, rescueProgress: 0 }, questions), null);
+  assert.equal(restoreGame({ ...state, rescues: 2 }, questions), null);
 });
