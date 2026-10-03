@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react';
 import './adventure-events.css';
 
 export type RescueEventProps = {
+  cinematic?: boolean;
   chapter: number;
   progress: number;
   onStep: (step: number) => void;
@@ -160,7 +161,7 @@ function LanternScene({ progress, river }: { progress: number; river: boolean })
   </>;
 }
 
-export function RescueEvent({ chapter, progress: rawProgress, onStep, route }: RescueEventProps) {
+export function RescueEvent({ chapter, progress: rawProgress, onStep, route, cinematic = false }: RescueEventProps) {
   const progress = Math.max(0, Math.min(3, Math.trunc(rawProgress)));
   const stage = chapter === 1 ? 1 : chapter === 2 ? 2 : 3;
   const river = route === 'river';
@@ -188,10 +189,10 @@ export function RescueEvent({ chapter, progress: rawProgress, onStep, route }: R
       <button key={`${stage}-${progress}`} ref={actionRef} type="button" className="rescue-action" data-testid="rescue-action" onClick={event => { if (event.detail < 2) onStep(progress); }}>
         <span className="rescue-action-number" aria-hidden="true">{progress + 1}</span>{actions[progress]}<span aria-hidden="true"> →</span>
       </button>
-      <p className="rescue-earned">みんなで 4もんに とりくんで、どうぐが そろったよ！</p>
-      <ol className="rescue-tools" aria-label="みんなで あつめた どうぐ">
+      {!cinematic && <p className="rescue-earned">みんなで 4もんに とりくんで、どうぐが そろったよ！</p>}
+      {!cinematic && <ol className="rescue-tools" aria-label="みんなで あつめた どうぐ">
         {tools.map((tool, index) => <li key={tool} className={index < progress ? 'rescue-tool-used' : ''}><span aria-hidden="true">{index < progress ? '✓' : '◇'}</span> {tool}<span className="rescue-tool-state">{index < progress ? 'つかった' : 'じゅんび OK'}</span></li>)}
-      </ol>
+      </ol>}
     </> : <p className="rescue-thanks">{thankYou}</p>}
   </div>;
 }

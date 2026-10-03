@@ -1,0 +1,271 @@
+.party-camp {
+  width: min(1120px, 100%);
+  height: 100%;
+  min-height: 0;
+  margin: 0 auto;
+  padding: 12px 22px 18px;
+  overflow-y: auto;
+  color: #234e47;
+  scrollbar-gutter: stable;
+}
+
+.camp-topline {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 18px;
+  align-items: center;
+}
+
+.camp-topline .camp-back {
+  min-height: 48px;
+  padding: 9px 16px;
+  background: #fff9e8;
+}
+
+.camp-heading {
+  text-align: center;
+}
+
+.camp-heading h1 {
+  font-size: 26px;
+  font-weight: 900;
+  line-height: 1.45;
+}
+
+.camp-heading p {
+  font-size: 12px;
+  line-height: 1.8;
+  font-weight: 700;
+}
+
+.party-camp .count-selector {
+  background: #f1e6c8;
+  border-color: #ccb780;
+  padding: 4px;
+  gap: 2px;
+}
+
+.party-camp .count-selector button {
+  min-width: 48px;
+  min-height: 44px;
+}
+
+.party-camp .count-selector button[aria-pressed="true"] {
+  background: #fff5cf;
+  color: #654918;
+  box-shadow: inset 0 0 0 2px #c49839;
+}
+
+.camp-party-slots {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  justify-content: center;
+  max-width: 880px;
+  margin: 10px auto 12px;
+}
+
+.camp-party-slots[data-count="1"] { grid-template-columns: minmax(0, 210px); }
+.camp-party-slots[data-count="2"] { grid-template-columns: repeat(2, minmax(0, 210px)); }
+.camp-party-slots[data-count="3"] { grid-template-columns: repeat(3, minmax(0, 210px)); }
+
+.camp-player-slot {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 0;
+  padding: 8px 8px 9px;
+  border: 2px solid #c7c9a3;
+  border-radius: 22px 22px 16px 16px;
+  background: #fff9e5ee;
+  color: #315a4c;
+  box-shadow: 0 4px 0 #73846440;
+}
+
+.camp-player-slot[aria-pressed="true"] {
+  border-color: #b27b24;
+  background: #fff1bf;
+  box-shadow: 0 4px 0 #a47428;
+}
+
+.camp-player-slot:hover {
+  background: #fff5d5;
+  border-color: #b27b24;
+}
+
+.camp-player-slot > svg {
+  flex-shrink: 0;
+}
+
+.camp-slot-number {
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1.6;
+}
+
+.camp-slot-number > span {
+  font-size: 10px;
+}
+
+.camp-player-slot > strong {
+  font-size: 15px;
+  line-height: 1.6;
+}
+
+.camp-slot-grade {
+  font-size: 11px;
+  line-height: 1.6;
+  font-weight: 700;
+}
+
+.party-camp .camp-editor {
+  display: block;
+  max-width: 850px;
+  max-height: 262px;
+  overflow-y: auto;
+  margin: 0 auto;
+  padding: 12px 20px;
+  border: 2px solid #d7c79b;
+  border-radius: 18px;
+  background: #fffae9;
+  box-shadow: 0 4px 0 #6c765433;
+  scrollbar-gutter: stable;
+}
+
+.party-camp .player-setup-title {
+  gap: 9px;
+  margin: 0 0 6px;
+}
+
+.party-camp .player-setup-title h2 {
+  font-size: 16px;
+  line-height: 1.6;
+}
+
+.party-camp .number-badge {
+  color: #6a4c16;
+  background: #f4d883;
+  border: 1px solid #bd963e;
+  font-weight: 800;
+}
+
+.camp-editor-fields {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 32px;
+  align-items: center;
+}
+
+.party-camp .animal-options {
+  gap: 5px;
+  margin: 0;
+}
+
+.party-camp .animal-options button {
+  min-width: 0;
+  padding: 4px 3px;
+}
+
+.party-camp .animal-options button span {
+  margin-top: 0;
+  color: #315a4c;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.party-camp .animal-options .chosen {
+  background: #fff0be;
+  border-color: #b78025;
+}
+
+.camp-learning-settings .field-label {
+  font-size: 15px;
+}
+
+.camp-learning-settings .field-label select {
+  min-width: 155px;
+  background: #fffdf5;
+  border-color: #a1b49c;
+  color: #234e47;
+}
+
+.camp-learning-settings .check-label {
+  font-size: 12px;
+  min-height: 42px;
+}
+
+.party-camp .unit-picker {
+  margin-top: 8px;
+  padding-top: 6px;
+  border-top-color: #d4caa7;
+}
+
+.party-camp .unit-picker summary {
+  min-height: 38px;
+  padding: 7px 0;
+  color: #315c50;
+  font-size: 13px;
+}
+
+.camp-unit-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0 18px;
+}
+
+.camp-unit-options .check-label {
+  min-height: 44px;
+  font-size: 13px;
+}
+
+.camp-start {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  max-width: 850px;
+  margin: 14px auto 0;
+}
+
+.camp-start p {
+  padding: 7px 13px;
+  border-radius: 12px;
+  background: #fff9e8e8;
+  color: #315a4c;
+  font-size: 14px;
+  line-height: 1.8;
+}
+
+.camp-start p span {
+  display: block;
+  font-size: 12px;
+}
+
+.camp-start .primary {
+  min-height: 58px;
+  font-size: 18px;
+  white-space: nowrap;
+}
+
+@media (max-width: 760px) {
+  .party-camp { padding: 12px 12px 20px; }
+  .camp-topline { grid-template-columns: auto 1fr; gap: 9px 12px; }
+  .camp-heading { text-align: right; }
+  .camp-heading h1 { font-size: 23px; }
+  .camp-heading p { font-size: 10px; }
+  .camp-topline .count-selector { grid-column: 1 / -1; justify-self: center; }
+  .camp-party-slots { gap: 9px; margin-top: 12px; }
+  .camp-party-slots[data-count="3"],
+  .camp-party-slots[data-count="4"] { grid-template-columns: repeat(2, minmax(0, 1fr)); max-width: 470px; }
+  .camp-player-slot { padding: 7px 5px; }
+  .camp-slot-number > span { display: block; }
+  .camp-player-slot > svg { width: 96px; height: 96px; }
+  .party-camp .camp-editor { padding: 12px 14px; max-height: none; overflow-y: visible; }
+  .camp-editor-fields { grid-template-columns: 1fr; gap: 14px; }
+  .party-camp .animal-options { justify-content: center; }
+  .camp-learning-settings { padding-top: 9px; border-top: 1px dashed #d4caa7; }
+  .camp-start { flex-direction: column; gap: 10px; text-align: center; }
+  .camp-start .primary { width: 100%; font-size: 17px; }
+  .camp-start p { width: 100%; font-size: 13px; }
+  .camp-unit-options { grid-template-columns: 1fr; }
+}

@@ -2,6 +2,7 @@ import { test, expect } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import { writeFile } from 'node:fs/promises';
 import { questions } from '../src/questions';
+import { configureParty, rememberMap, rememberedMap, resumeSavedAdventure } from './ui-helpers';
 
 test.use({ reducedMotion: 'no-preference' });
 
@@ -11,6 +12,8 @@ interface MotionSample {
   settled: boolean;
   position: number;
   caravanPosition: number;
+  hudPosition: number;
+  receipt: { dice: number; start: number; end: number } | null;
   step: number;
   total: number;
   hasQuestion: boolean;
@@ -34,10 +37,10 @@ test.afterEach(async ({ page }) => {
 });
 
 async function start(page: Page, grades: number[] = [1]) {
-  await page.getByRole('group', { name: 'あそぶ人数', exact: true }).getByRole('button', { name: `${grades.length}人`, exact: true }).click();
-  for (const [index, grade] of grades.entries()) await page.getByLabel(`${index + 1}人めの学年`, { exact: true }).selectOption(String(grade));
+  await configureParty(page, grades);
   await page.getByRole('button', { name: /ぼうけんに しゅっぱつ/ }).click();
   await expect(page.locator('.roll-scene')).toHaveAttribute('data-motion-stage', 'idle');
+  await rememberMap(page);
 }
 
 async function setShortMotion(page: Page, enabled: boolean) {
@@ -61,12 +64,15 @@ function observeMotion(page: Page): Promise<MotionSample[]> {
       const board = document.querySelector<SVGElement>('.board-panel svg.adventure-board');
       const caravan = document.querySelector<SVGElement>('.board-panel .board-caravan');
       const count = document.querySelector<HTMLElement>('.roll-progress');
+      const receipt = document.querySelector<HTMLElement>('.last-roll');
       const hasQuestion = Boolean(document.querySelector('.question-prompt'));
       const diceStyle = dice ? getComputedStyle(dice) : null;
       const sample = {
         stage: scene?.dataset.motionStage ?? (hasQuestion ? 'question' : 'absent'),
         face: Number(dice?.dataset.face ?? 0), settled: dice?.dataset.settled === 'true',
         position: Number(board?.dataset.position ?? -1), caravanPosition: Number(caravan?.dataset.position ?? -1),
+        hudPosition: Number(document.querySelector<HTMLElement>('.journey-position')?.dataset.position ?? -1),
+        receipt: receipt ? { dice: Number(receipt.dataset.dice), start: Number(receipt.dataset.start), end: Number(receipt.dataset.end) } : null,
         step: Number(count?.dataset.step ?? -1), total: Number(count?.dataset.total ?? -1), hasQuestion,
         animation: diceStyle?.animationName ?? 'none', transform: diceStyle?.transform ?? 'none', time: performance.now(),
       };
@@ -90,8 +96,8 @@ async function lastRoll(page: Page) {
   expect(dice).toBeGreaterThanOrEqual(1);
   expect(dice).toBeLessThanOrEqual(3);
   expect(end - start).toBe(dice);
-  await expect(page.locator('.board-panel svg.adventure-board')).toHaveAttribute('data-position', String(end));
-  await expect(page.locator('.board-panel .board-caravan')).toHaveAttribute('data-position', String(end));
+  await expect(page.locator('.journey-position')).toHaveAttribute('data-position', String(end));
+  await expect(page.locator('.board-panel svg.adventure-board')).toHaveCount(0);
   return { dice, start, end };
 }
 
@@ -104,11 +110,21 @@ function checkTrace(samples: MotionSample[], result: { dice: number; start: numb
   expect(stages).toEqual(reduced
     ? ['idle', 'settled', 'stepping', 'arrived', 'question']
     : ['idle', 'rolling', 'settled', 'stepping', 'arrived', 'question']);
-  const positions = uniqueConsecutive(samples.map(sample => sample.position));
+  const movement = samples.filter(sample => sample.stage !== 'question');
+  const positions = uniqueConsecutive(movement.map(sample => sample.position));
   expect(positions).toEqual(Array.from({ length: result.dice + 1 }, (_, step) => result.start + step));
+  expect(movement.at(-1)!.stage).toBe('arrived');
+  expect(movement.at(-1)!.caravanPosition).toBe(result.end);
+  const questionFrame = samples.at(-1)!;
+  expect(questionFrame.receipt).toEqual(result);
+  expect(questionFrame.hudPosition).toBe(result.end);
+  expect(questionFrame.position, 'the question scene replaces the rendered map').toBe(-1);
   for (const sample of samples) {
-    expect(sample.caravanPosition).toBe(sample.position);
-    if (sample.stage !== 'question') expect(sample.hasQuestion).toBe(false);
+    if (sample.stage !== 'question') {
+      expect(sample.caravanPosition).toBe(sample.position);
+      expect(sample.hudPosition).toBe(sample.position);
+      expect(sample.hasQuestion).toBe(false);
+    }
     if (sample.stage === 'rolling' || sample.stage === 'settled') {
       expect(sample.position, 'the wagon waits for a readable settled die').toBe(result.start);
       expect(sample.step).toBe(0);
@@ -146,9 +162,9 @@ async function eventAndNext(page: Page, completed: number) {
   await page.getByTestId('continue-answer').click();
   await expect(page.getByRole('progressbar')).toHaveAttribute('aria-valuenow', String(completed));
   if (completed % 4 === 0) {
-    const checkpoint = page.locator('.board-panel [data-checkpoint="true"]').nth(completed / 4 - 1);
-    const position = await page.locator('.board-panel svg.adventure-board').getAttribute('data-position');
-    await expect(checkpoint).toHaveAttribute('data-square', position!);
+    const checkpoint = rememberedMap(page).checkpoints[completed / 4 - 1];
+    const position = Number(await page.locator('.journey-position').getAttribute('data-position'));
+    expect(checkpoint, 'the rescue HUD matches the checkpoint previously shown on the map').toBe(position);
     for (let progress = 0; progress < 3; progress += 1) {
       if (progress > 0) {
         const previousAction = Date.now();
@@ -163,6 +179,7 @@ async function eventAndNext(page: Page, completed: number) {
     const route = completed === 4 ? 'river' : 'forest';
     await page.locator(`button[data-route="${route}"]`).click();
     await expect(page.locator(`[data-chapter-path="${completed / 4 + 1}"]`)).toHaveAttribute('data-route', route);
+    await rememberMap(page);
   } else await page.getByTestId('next-turn').click();
 }
 
@@ -242,7 +259,8 @@ test('enabling reduced motion during a roll completes the same turn once', async
   const samples = await trace;
   const settled = samples.find(sample => sample.stage === 'settled')!;
   expect(settled.face).toBe(result.dice);
-  expect(uniqueConsecutive(samples.map(sample => sample.position))).toEqual(Array.from({ length: result.dice + 1 }, (_, step) => step));
+  expect(uniqueConsecutive(samples.filter(sample => sample.stage !== 'question').map(sample => sample.position))).toEqual(Array.from({ length: result.dice + 1 }, (_, step) => step));
+  expect(samples.at(-1)!.receipt).toEqual(result);
   await expect(page.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '0');
   await answer(page);
   await eventAndNext(page, 1);
@@ -314,7 +332,7 @@ test('pause preserves a motion stage; saving and reloading restarts the same pen
   await page.getByRole('dialog').getByRole('button', { name: 'ここまでを ほぞん', exact: true }).click();
   await expect(page.getByRole('dialog').getByRole('status')).toContainText('ほぞんしたよ');
   await page.reload();
-  await page.getByRole('button', { name: /ほぞんした つづきから/ }).click();
+  await resumeSavedAdventure(page);
   await expect(page.locator('.roll-scene')).toHaveAttribute('data-motion-stage', 'rolling');
   const result = await lastRoll(page);
   expect(result).toEqual({ dice: expectedDice, start: 0, end: expectedDice });
@@ -341,7 +359,7 @@ test('cancelling restart preserves a rolling turn; confirming a new adventure di
   await page.getByRole('button', { name: /ひとやすみ/ }).click();
   await dialog.getByRole('button', { name: 'はじめから あそぶ', exact: true }).click();
   await dialog.getByRole('button', { name: 'はじめから あそぶ', exact: true }).click();
-  await expect(page.locator('.welcome')).toBeVisible();
+  await expect(page.locator('.game-shell')).toHaveAttribute('data-scene', 'setup');
   await start(page, [1, 6]);
   await staysStill(page, 2_500);
   await expect(page.locator('.roll-scene')).toHaveAttribute('data-motion-stage', 'idle');
@@ -379,10 +397,10 @@ for (const grades of [[1], [2, 6], [1, 6, 3, 5]]) {
     await expect(page.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '12');
     await expect(page.locator('.mission')).toContainText('3 / 3 びき');
     for (let index = 0; index < grades.length; index += 1) await expect(page.locator('.goal-party > div').nth(index)).toContainText(`${12 / grades.length}もん`);
-    await expect(page.locator('.board-panel [data-checkpoint="true"]').last()).toHaveAttribute('data-square', String(position));
-    await expect(page.locator('[data-chapter-path="2"]')).toHaveAttribute('data-route', 'river');
-    await expect(page.locator('[data-chapter-path="3"]')).toHaveAttribute('data-route', 'forest');
-    await expect(page.locator('.board-bottom span').last()).toHaveText(`${position} / ${position} マス`);
+    expect(rememberedMap(page).checkpoints.at(-1)).toBe(position);
+    expect(rememberedMap(page).routes['2']).toBe('river');
+    expect(rememberedMap(page).routes['3']).toBe('forest');
+    await expect(page.locator('.journey-position')).toHaveText(`${position} / ${position} マス`);
   });
 }
 

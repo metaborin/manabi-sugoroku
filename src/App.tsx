@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react';
-import type { Grade, Player } from './types';
+import type { Player } from './types';
 import { questions } from './questions';
 import { createGame, reducer, getQuestion, restoreGame, checkpointPositions } from './engine';
 import type { GameAction, GameState } from './engine';
@@ -12,6 +12,9 @@ import { chapters, chapterIndex, encounter, routeChoices } from './adventure';
 import { Dice } from './Dice';
 import { JourneyRecap } from './JourneyRecap';
 import { useJourneyMotion } from './useJourneyMotion';
+import { WorldScenery, TitleCaravan } from './WorldScenery';
+import { PartySetup } from './PartySetup';
+import { useGameAudio } from './useGameAudio';
 
 const names = ['こむぎ', 'みみ', 'くるみ', 'そら'];
 const saveKey = 'manabi-sugoroku-save-v1';
@@ -27,6 +30,8 @@ function readSaved(): GameState | null {
 function App() {
   const [players, setPlayers] = useState<Player[]>(initialPlayers);
   const [count, setCount] = useState(1);
+  const [frontScene, setFrontScene] = useState<'title' | 'setup' | 'resume'>('title');
+  const [information, setInformation] = useState(false);
   const [game, setGame] = useState<GameState | null>(null);
   const gameRef = useRef<GameState | null>(null);
   const [saved, setSaved] = useState<GameState | null>(readSaved);
@@ -48,8 +53,9 @@ function App() {
   const modalRef = useRef<HTMLDivElement>(null);
   const instructionModalWasOpen = useRef(false);
   const supportModalWasOpen = useRef(false);
-  const audioRef = useRef<AudioContext | null>(null);
-  const modalView = confirmErase ? 'erase' : confirmRestart ? 'restart' : settings ? 'settings' : paused ? 'pause' : null;
+  const audio = useGameAudio(volume);
+  const heardMotion = useRef('');
+  const modalView = information ? 'information' : confirmErase ? 'erase' : confirmRestart ? 'restart' : settings ? 'settings' : paused ? 'pause' : null;
   const modalOpen = modalView !== null;
   const unsaved = game !== null && game !== saved;
   const reducedMotion = shortMotion || systemReduced;
@@ -67,7 +73,8 @@ function App() {
   const personalTurn = game ? Math.min(game.totalTurns / game.players.length, game.completedByPlayer[game.turnIndex] + (game.phase === 'event' ? 0 : 1)) : 0;
 
   useDialogFocus(modalView, modalRef, () => {
-    if (confirmErase) setConfirmErase(false);
+    if (information) setInformation(false);
+    else if (confirmErase) setConfirmErase(false);
     else if (confirmRestart) setConfirmRestart(false);
     else { setSettings(false); setPaused(false); }
   });
@@ -84,22 +91,10 @@ function App() {
     if (rescueLock.current) return;
     rescueLock.current = true;
     send({ type: 'rescue', step });
-    playSound();
+    audio.play('rescue');
     window.setTimeout(() => { rescueLock.current = false; }, 280);
   }
   function stopSpeech() { try { if ('speechSynthesis' in window) speechSynthesis.cancel(); } catch { /* Optional device audio must never interrupt a turn. */ } }
-  function playSound() {
-    if (!volume) return;
-    try {
-      const audio = audioRef.current ?? new AudioContext(); audioRef.current = audio;
-      void audio.resume();
-      const oscillator = audio.createOscillator(); const gain = audio.createGain();
-      oscillator.connect(gain); gain.connect(audio.destination); oscillator.type = 'sine';
-      oscillator.frequency.setValueAtTime(523.25, audio.currentTime); oscillator.frequency.linearRampToValueAtTime(783.99, audio.currentTime + 0.12);
-      gain.gain.setValueAtTime(volume / 500, audio.currentTime); gain.gain.exponentialRampToValueAtTime(0.001, audio.currentTime + 0.25);
-      oscillator.start(); oscillator.stop(audio.currentTime + 0.26);
-    } catch { /* Sound is optional. */ }
-  }
   function speak() {
     if (!question || !speechOn) return;
     if (!question.speechSafe) { setNotice('よみかたの もんだいは、こたえが わからないように よみあげを おやすみするよ。'); return; }
@@ -116,7 +111,7 @@ function App() {
   }
   function start() {
     const configured = players.slice(0, count).map(p => ({ ...p, units: p.units.length ? p.units : unitsFor(p) }));
-    updateGame(createGame(configured, questions)); setNotice('');
+    audio.play('confirm'); updateGame(createGame(configured, questions)); setNotice(''); setExchangeNotice('');
     history.pushState({ adventure: true }, '', location.href);
   }
   function keepParty(party: Player[]) {
@@ -135,12 +130,17 @@ function App() {
     catch { setNotice('この たんまつでは ほぞんできなかったよ。ページを とじずに つづけてね。'); }
   }
   function eraseSaved() {
-    try { localStorage.removeItem(saveKey); setSaved(null); setConfirmErase(false); setNotice('ほぞんした つづきを けしたよ。いまの ぼうけんは つづけられるよ。'); }
+    try {
+      localStorage.removeItem(saveKey); setSaved(null); setConfirmErase(false);
+      if (!gameRef.current && frontScene === 'resume') setFrontScene('title');
+      setNotice('ほぞんした つづきを けしたよ。いまの ぼうけんは つづけられるよ。');
+    }
     catch { setNotice('ほぞんを けせなかったよ。'); }
   }
   function restart() {
     if (gameRef.current) keepParty(gameRef.current.players);
     stopSpeech(); updateGame(null); setConfirmRestart(false); setConfirmErase(false); setPaused(false); setSettings(false); setNotice(''); setExchangeNotice('');
+    setFrontScene('setup');
     requestAnimationFrame(() => { const title = document.getElementById('party-title'); title?.focus({ preventScroll: true }); title?.scrollIntoView({ block: 'start', behavior: 'instant' }); });
   }
   function chooseAnswer() {
@@ -149,6 +149,20 @@ function App() {
   }
   function showSupport(type: 'hint' | 'help') { send({ type }); setSupportRequest(value => value + 1); }
   function editPlayer(index: number, patch: Partial<Player>) { setPlayers(list => list.map((p, i) => i === index ? { ...p, ...patch } : p)); }
+
+  useEffect(() => {
+    if (!game) document.querySelector<HTMLElement>('[data-scene-heading]')?.focus({ preventScroll: true });
+  }, [frontScene, game]);
+
+  useEffect(() => {
+    if (motionSuspended) audio.stop();
+    const key = game?.phase === 'moving' ? `${game.token}:${motion.stage}:${motion.step}` : '';
+    if (key === heardMotion.current) return;
+    heardMotion.current = key;
+    if (motionSuspended) return;
+    if (motion.stage === 'stepping') audio.play('step');
+    else if (motion.stage === 'arrived') audio.play('land');
+  }, [game?.phase, game?.token, motion.stage, motion.step, motionSuspended, audio]);
 
   useEffect(() => {
     const media = matchMedia('(prefers-reduced-motion: reduce)');
@@ -207,60 +221,66 @@ function App() {
     heading?.focus({ preventScroll: true }); heading?.scrollIntoView({ block: 'start', behavior: 'instant' });
   }, [game?.phase, game?.questionId, game?.hintUsed, game?.helpUsed, game?.attempts, supportRequest, modalOpen]);
 
-  return <div className={`app ${reducedMotion ? 'short-motion' : ''} ${motionSuspended ? 'motion-paused' : ''}`}>
-    <header className="site-header" inert={modalOpen}><a className="brand" href="#" onClick={e => { e.preventDefault(); if (game) setPaused(true); }} aria-label="まなびの冒険すごろく ホーム"><span className="brand-icon">✦</span><span>まなびの<span className="brand-small">冒険すごろく</span></span></a><div className="header-actions"><span className="co-op-label">みんなで ちからを あわせよう</span><button className="icon-button" onClick={() => setSettings(true)}>⚙ <span>せってい</span></button>{game && <button className="icon-button" onClick={() => setPaused(true)}>Ⅱ <span>ひとやすみ</span></button>}</div></header>
-    <main inert={modalOpen}>
-      {!game ? <>
-        <section className="welcome">
-          <div className="welcome-copy"><p className="eyebrow"><span/> 1〜4人で あそぶ おべんきょうの 冒険</p><h1>ひとりでも、<br/>みんなでも。<br/><span>まなびが 冒険になる。</span></h1><p className="intro">どうぶつの なかまたちと、ふしぎな もりへ。<br/>こくごと さんすうの 力で、<br/>こまっている なかまを たすけに いこう！</p><div className="welcome-facts"><span>✦ 小学1〜6年</span><span>◷ 10分くらい</span><span>♡ まちがえても だいじょうぶ</span></div><a className="primary setup-jump" href="#party">なかまを えらぼう <span>→</span></a>{saved && <div className="resume-card"><SaveSummary saved={saved}/><button className="secondary resume-button full" onClick={resumeSaved}>ほぞんした つづきから →</button></div>}</div>
-          <div className="welcome-map"><div className="map-label">ぼうけんの ちず <span>こもれびの もり</span></div><Board position={0} totalDistance={24} rescued={0} route="forest" characters={players.slice(0, count).map(p => p.character)}/><div className="map-caption"><span>START はじまりの おか</span><span>GOAL なかまの むら ⚑</span></div></div>
-        </section>
-        <section className="party-section" id="party"><div className="section-heading"><div><p className="eyebrow">ぼうけんの じゅんび</p><h2 id="party-title" tabIndex={-1}>きょうの なかまは？</h2></div><div className="count-selector" role="group" aria-label="あそぶ人数">{[1, 2, 3, 4].map(n => <button key={n} aria-pressed={count === n} onClick={() => setCount(n)}>{n}人</button>)}</div></div>
-          <div className={`player-setup-grid count-${count}`}>{players.slice(0, count).map((player, index) => <article className="player-setup" key={player.id} aria-label={`${index + 1}人めの設定`}><div className="player-setup-title"><span className="number-badge">{index + 1}</span><strong>{index + 1}人めの なかま</strong></div><div className="animal-options" role="group" aria-label={`${index + 1}人めのキャラクター`}>{names.map((name, kind) => <button key={kind} className={player.character === kind ? 'chosen' : ''} aria-pressed={player.character === kind} aria-label={name} onClick={() => editPlayer(index, { character: kind })}><Animal kind={kind} size={52}/><span>{name}</span></button>)}</div><label className="field-label">がくねん<select aria-label={`${index + 1}人めの学年`} value={player.grade} onChange={e => editPlayer(index, { grade: Number(e.target.value) as Grade, review: false, units: [] })}>{[1, 2, 3, 4, 5, 6].map(grade => <option value={grade} key={grade}>小学 {grade} 年</option>)}</select></label>{player.grade > 1 && <label className="check-label"><input type="checkbox" checked={player.review} onChange={e => editPlayer(index, { review: e.target.checked, units: [] })}/>ひとつ前の がくねんを ふくしゅう</label>}<details className="unit-picker"><summary>ならった たんげんを えらぶ</summary><p>{effectiveGrade(player)}年の いちぶの たんげんだよ。<br/>まだの もんだいは、あとでも かえられるよ。</p>{unitsFor(player).map(unit => <label className="check-label" key={unit}><input type="checkbox" checked={player.units.length === 0 || player.units.includes(unit)} onChange={e => { const chosen = player.units.length ? player.units : unitsFor(player); const next = e.target.checked ? [...chosen, unit] : chosen.filter(u => u !== unit); if (!next.length) { setNotice('たんげんは ひとつ いじょう えらんでね。'); return; } editPlayer(index, { units: next }); }}/>{unit}</label>)}</details></article>)}</div>
-          <div className="start-strip"><p>ひとつの ワゴンで、3つの おてつだいへ。みんなで みちを えらぼう。<br/><small>サイコロ → もんだい → おてつだい。12かいの まなびで ゴール。じかんせいげんは ないよ。</small></p><button className="primary" onClick={start}>ぼうけんに しゅっぱつ <span>→</span></button></div>
-        </section><aside className="adult-note"><strong>おうちの方へ</strong><p>国語・算数の一部単元を収録した初版です。各学年20問、全120問。学年の全範囲を網羅するものではありません。本名・アカウントは不要です。ゲーム中にデータを外部送信せず、「ほぞん」を押したときだけ、このブラウザに進行状況を保存します。</p></aside>
-      </> : <>
-        <section className="adventure-heading"><div><p className="eyebrow">みんなで つくる、ひとつの 冒険</p><h1>こもれびの もりの おとしもの</h1></div><div className="mission"><span className="mission-icon">⚑</span><div><small>なかまを たすけよう</small><strong>{game.rescues} <span>/ 3 びき</span></strong></div></div></section>
-        <div className="adventure-layout"><div className="journey-column"><section className="board-panel" aria-label="冒険のマップ"><div className="board-top"><span>第{chapter + 1}話 · {chapters[chapter].title}</span><span>{game.turnsCompleted} / {game.totalTurns} まなび</span></div><Board position={visualPosition} totalDistance={game.goalPosition} checkpoints={checkpoints} routes={game.routes} rescued={game.rescues} rescueProgress={game.rescueProgress} route={currentRoute} moving={motion.stage === 'stepping' && !motionSuspended} arrived={motion.stage === 'arrived'} travel={game.phase === 'moving' && motion.stage !== 'rolling' ? { start: game.position, dice: game.dice!, step: motion.step } : undefined} characters={game.players.map(p => p.character)}/><div className="board-bottom"><span>{game.phase === 'goal' ? 'みんなの ちからで、むらに とうちゃく！' : game.position >= checkpoints[chapter] ? 'なかまが まっているよ！' : 'つぎの なかままで あと ' + (checkpoints[chapter] - visualPosition) + 'マス'}</span><span>{visualPosition} / {game.goalPosition} マス</span></div><div className="progress-track" role="progressbar" aria-label="冒険の進みぐあい" aria-valuemin={0} aria-valuemax={game.totalTurns} aria-valuenow={game.turnsCompleted}><span style={{ width: game.turnsCompleted / game.totalTurns * 100 + '%' }}/></div></section>
-          <ol className="journey-chapters" aria-label="3つのおてつだい">{chapters.map((item, index) => <li key={item.friend} className={game.rescues > index ? 'chapter-done' : chapter === index ? 'chapter-current' : ''}><RescueAnimal kind={index} size={46}/><div><small>{game.rescues > index ? '✓ たすけた！' : chapter === index ? 'いまの おてつだい' : 'つぎの おてつだい'}</small><strong>{item.friend}</strong><span>{index === 0 ? 'はしを なおそう' : index === 1 ? 'かごを とどけよう' : 'あかりを ともそう'}</span></div></li>)}</ol>
-          {game.phase !== 'goal' && <div className="chapter-preparation"><div><strong>{isRescue ? 'おてつだいの じゅんびが できた！' : chapters[chapter].mission}</strong><small>{isRescue ? 'そうだんして、おどうぐを おしてみよう。' : '4つの まなびを あつめると、おどうぐが とどくよ。'}</small></div><div className="learning-lights" aria-label={Math.min(4, Math.max(0, game.turnsCompleted - chapter * 4)) + ' / 4 まなび'}>{[0,1,2,3].map(light => <span key={light} className={game.turnsCompleted - chapter * 4 > light ? 'lit' : ''}>{game.turnsCompleted - chapter * 4 > light ? '✦' : '·'}</span>)}</div></div>}
-        </div>
-        <section className="play-panel" aria-label="いまの手番" ref={playPanelRef}>
-          {game.phase !== 'goal' && current && <div className="turn-banner"><Animal kind={current.character} size={62}/><div><small>{game.turnIndex + 1}人め ・ 小学{current.grade}年{current.review ? '（ふくしゅう）' : ''}</small><strong>{game.turnIndex + 1}人め · {names[current.character]}の ばん</strong><span className="turn-participation" data-testid="turn-participation">じぶんの {personalTurn} / {game.totalTurns / game.players.length}もんめ</span></div><span className="turn-star">✦</span></div>}
-          {game.phase !== 'goal' && <ol className="turn-steps" aria-label="つぎにすること">{['サイコロ', 'もんだい', isRescue ? 'おてつだい' : 'できごと'].map((label, index) => <li key={index} aria-current={(game.phase === 'roll' || game.phase === 'moving' ? 0 : game.phase === 'question' || game.phase === 'feedback' ? 1 : 2) === index ? 'step' : undefined}><b>{index + 1}</b>{label}</li>)}</ol>}
-          {(game.phase === 'roll' || game.phase === 'moving') && <div className="roll-scene" data-motion-stage={motion.stage}>
-            <p className="eyebrow">{motion.stage === 'rolling' ? 'サイコロが ころころ…' : motion.stage === 'arrived' ? 'ぴたっ！ ついたよ' : 'つぎは どこへ いこう？'}</p>
-            <h2 ref={focusRef} tabIndex={-1}>{game.phase === 'roll' ? 'サイコロを ふろう' : motion.stage === 'rolling' ? 'なにが でるかな？' : motion.stage === 'arrived' ? 'とうちゃく！' : game.dice + 'マス すすむよ！'}</h2>
+  const scene = game?.phase ?? frontScene;
+  const onMap = game?.phase === 'roll' || game?.phase === 'moving';
+  return <div className={`app console-app ${reducedMotion ? 'short-motion' : ''} ${motionSuspended ? 'motion-paused' : ''}`}>
+    <main className="game-shell" data-scene={scene} inert={modalOpen}>
+      <WorldScenery variant={!game && frontScene === 'title' ? 'title' : !game ? 'camp' : 'adventure'}/>
+      <header className={`game-hud ${game ? '' : 'front-hud'}`}>
+        {game && current ? <>
+          <div className="turn-banner"><Animal kind={current.character} size={54}/><div><small>{game.phase === 'goal' ? 'みんなの ぼうけんの きろく' : `${game.turnIndex + 1}人め ・ 小学${current.grade}年${current.review ? '（ふくしゅう）' : ''}`}</small><strong>{game.phase === 'goal' ? 'なかま みんなで ゴール！' : `${game.turnIndex + 1}人め · ${names[current.character]}の ばん`}</strong><span data-testid="turn-participation">{game.phase === 'goal' ? `${game.players.length}人で ${game.turnsCompleted}もん おわり` : `じぶんの ${personalTurn} / ${game.totalTurns / game.players.length}もんめ`}</span></div></div>
+          <div className="quest-hud"><strong>第{chapter + 1}話 · {chapters[chapter].title}</strong><div className="quest-meter"><span className="mission">♥ {game.rescues} / 3 びき</span><span className="journey-position" data-position={visualPosition} data-total={game.goalPosition}>{visualPosition} / {game.goalPosition} マス</span><span className="progress-track" role="progressbar" aria-label="冒険の進みぐあい" aria-valuemin={0} aria-valuemax={game.totalTurns} aria-valuenow={game.turnsCompleted}><span style={{ width: game.turnsCompleted / game.totalTurns * 100 + '%' }}/></span></div></div>
+        </> : <span className="edition-mark">こもれびの もりへ ようこそ</span>}
+        <div className="hud-controls"><button className="hud-button" onClick={() => setSettings(true)}>⚙ <span>せってい</span></button>{game && <button className="hud-button" onClick={() => setPaused(true)}>Ⅱ <span>ひとやすみ</span></button>}</div>
+      </header>
+
+      {!game && frontScene === 'title' && <section className="title-scene scene-enter" aria-label="タイトル">
+        <div className="title-copy"><p className="title-kicker">みんなで つくる、ひとつの 冒険</p><h1 data-scene-heading tabIndex={-1}><span>まなびの</span><strong>冒険すごろく</strong></h1><p className="title-episode">こもれびの もりの おとしもの</p>
+          <div className="title-actions"><button className="primary title-start" data-testid="new-adventure" onClick={() => { audio.play('confirm'); setFrontScene('setup'); }}>はじめから あそぶ <span>▶</span></button>{saved && <button className="secondary title-continue" onClick={() => setFrontScene('resume')}>ほぞんした つづきから →</button>}</div>
+          <p className="title-facts">1〜4人で ぼうけん · 小学1〜6年</p>
+        </div><TitleCaravan className="title-heroes"/>
+        <div className="title-bottom"><span>ひとつの ワゴンで、なかまを たすけに。</span><button className="text-button" onClick={() => setInformation(true)}>おうちの方へ</button></div>
+      </section>}
+      {!game && frontScene === 'setup' && <PartySetup players={players} count={count} onCount={setCount} onChange={editPlayer} onStart={start} onBack={() => setFrontScene('title')} onNotice={setNotice}/>}
+      {!game && frontScene === 'resume' && saved && <section className="resume-scene scene-enter"><div className="travel-notebook"><p className="eyebrow">ぼうけんの きろく</p><h1 data-scene-heading tabIndex={-1}>この つづきから あそぼう</h1><SaveSummary saved={saved}/><button className="primary full" data-testid="resume-adventure" onClick={() => { audio.play('confirm'); resumeSaved(); }}>ぼうけんを さいかいする →</button><button className="text-button" onClick={() => setFrontScene('title')}>← タイトルへ もどる</button></div></section>}
+
+      {game && <section className={`game-content play-panel scene-${game.phase}`} aria-label="いまの手番" ref={playPanelRef}>
+        {onMap && <div className="map-adventure scene-enter">
+          <div className="map-stage"><aside className="destination-sign"><span>つぎの おてつだい</span><RescueAnimal kind={chapter} size={88}/><strong>{chapters[chapter].friend}</strong><p>{chapters[chapter].mission}</p><div className="learning-lights" aria-label={Math.min(4, Math.max(0, game.turnsCompleted - chapter * 4)) + ' / 4 まなび'}>{[0,1,2,3].map(light => <span key={light} className={game.turnsCompleted - chapter * 4 > light ? 'lit' : ''}>{game.turnsCompleted - chapter * 4 > light ? '✦' : '·'}</span>)}</div></aside>
+            <section className="board-panel" aria-label="冒険のマップ"><Board position={visualPosition} totalDistance={game.goalPosition} checkpoints={checkpoints} routes={game.routes} rescued={game.rescues} rescueProgress={game.rescueProgress} route={currentRoute} moving={motion.stage === 'stepping' && !motionSuspended} arrived={motion.stage === 'arrived'} travel={game.phase === 'moving' && motion.stage !== 'rolling' ? { start: game.position, dice: game.dice!, step: motion.step } : undefined} characters={game.players.map(p => p.character)}/><div className="board-bottom"><span>{game.position >= checkpoints[chapter] ? 'なかまが まっているよ！' : 'つぎの なかままで あと ' + (checkpoints[chapter] - visualPosition) + 'マス'}</span><span>{visualPosition} / {game.goalPosition} マス</span></div></section>
+          </div>
+          <div className="roll-scene command-deck" data-motion-stage={motion.stage}>
+            <div className="command-character"><Animal kind={current!.character} size={80}/><div><p className="eyebrow">{game.turnIndex + 1}人めの なかまへ</p><h2 ref={focusRef} tabIndex={-1}>{game.phase === 'roll' ? 'サイコロを ふろう' : motion.stage === 'rolling' ? 'なにが でるかな？' : motion.stage === 'arrived' ? 'とうちゃく！' : game.dice + 'マス すすむよ！'}</h2></div></div>
             <Dice face={motion.face} settled={game.phase === 'moving' && motion.stage !== 'rolling'} rolling={motion.stage === 'rolling'}/>
-            <div className="roll-progress" data-step={motion.step} data-total={game.dice ?? 0} aria-live="polite" aria-atomic="true">
-              <strong>{game.phase === 'roll' ? 'でる めは 1・2・3。' : motion.stage === 'rolling' ? 'ころがって いるよ' : motion.stage === 'settled' ? game.dice + ' の め！ しゅっぱつ！' : motion.stage === 'arrived' ? game.dice + 'マス すすんだよ' : motion.step + ' / ' + game.dice + 'マス すすんだよ'}</strong>
-              {game.phase === 'moving' && motion.stage !== 'rolling' ? <ol className="move-count" aria-label="すすむマスを かぞえよう">{Array.from({ length: game.dice! }, (_, i) => <li key={i} className={motion.step > i ? 'count-reached' : ''} aria-current={motion.step === i + 1 ? 'step' : undefined}><b>{i + 1}</b><span>{motion.step > i ? '✓' : '・'}</span></li>)}</ol> : <p>つぎの なかまを めざそう！</p>}
-            </div>
-            <button className="primary full" disabled={game.phase !== 'roll'} onClick={() => { send({ type: 'roll' }); playSound(); }}>{game.phase === 'roll' ? <>サイコロを ふる <span>↗</span></> : motion.stage === 'rolling' ? 'サイコロを ふっているよ' : 'ワゴンを みまもろう'}</button>
-            <div className="motion-footer">{game.phase === 'moving' ? <button className="text-button full" data-testid="skip-motion" onClick={event => { if (event.detail <= 1) send({ type: 'moveComplete' }); }}>アニメを とばす →</button> : <p className="gentle-note">♡ ゆっくりで いいよ。いっしょに かんがえよう。</p>}</div>
+            <div className="roll-progress" data-step={motion.step} data-total={game.dice ?? 0} aria-live="polite" aria-atomic="true"><strong>{game.phase === 'roll' ? 'でる めは 1・2・3' : motion.stage === 'rolling' ? 'ころころ…' : motion.stage === 'settled' ? game.dice + ' の め！' : motion.stage === 'arrived' ? game.dice + 'マス すすんだよ' : motion.step + ' / ' + game.dice + 'マス'}</strong>{game.phase === 'moving' && motion.stage !== 'rolling' && <ol className="move-count" aria-label="すすむマスを かぞえよう">{Array.from({ length: game.dice! }, (_, i) => <li key={i} className={motion.step > i ? 'count-reached' : ''} aria-current={motion.step === i + 1 ? 'step' : undefined}><b>{i + 1}</b><span>{motion.step > i ? '✓' : '・'}</span></li>)}</ol>}</div>
+            <div className="command-action"><button className="primary" disabled={game.phase !== 'roll'} onClick={() => { send({ type: 'roll' }); audio.play('roll'); }}>{game.phase === 'roll' ? 'サイコロを ふる ▶' : motion.stage === 'rolling' ? 'ころころ…' : 'ワゴンを みまもろう'}</button>{game.phase === 'moving' && <button className="text-button" data-testid="skip-motion" onClick={event => { if (event.detail <= 1) send({ type: 'moveComplete' }); }}>アニメを とばす →</button>}</div>
+          </div>
+        </div>}
+
+        {(game.phase === 'question' || game.phase === 'feedback') && question && <div className={`question-scene travel-notebook scene-enter ${game.phase === 'feedback' ? 'notebook-feedback' : ''}`}>
+          <div className="notebook-top"><div className="question-meta"><span>{question.subject === 'math' ? 'さんすう' : 'こくご'}</span><small>{question.grade}年 · {question.unit}</small></div><div className="last-roll" data-dice={game.dice} data-start={game.position - (game.dice ?? 0)} data-end={game.position}><strong>{game.dice} の め · {game.dice}マス すすんだよ</strong><span>✓ とうちゃく</span></div></div>
+          <h2 className="question-prompt" ref={focusRef} tabIndex={-1}>{question.prompt}</h2>{speechOn && game.phase === 'question' && <button className="text-button speak-button" onClick={speak}>♪ もんだいを きく</button>}
+          {game.phase === 'question' ? <><div className={`question-workspace ${game.hintUsed || game.helpUsed || exchangeNotice ? 'has-support' : ''}`}>
+            <div className="question-companion">{!game.hintUsed && !game.helpUsed && !exchangeNotice && <div className="thinking-friend"><Animal kind={current!.character} size={166}/><p>ゆっくり かんがえてね。<br/>まちがえても だいじょうぶ！</p></div>}<LearningSupport question={question} attempts={game.attempts} hintUsed={game.hintUsed} helpUsed={game.helpUsed} exchangeNotice={exchangeNotice} onChoose={chooseAnswer}/></div>
+            <div className="choices">{question.choices.map((choice, index) => <button key={question.id + index} className={`choice ${game.attempts > 0 && game.selectedChoice === index ? 'tried' : ''}`} onClick={event => { if (event.detail > 1) return; stopSpeech(); send({ type: 'answer', choice: index }); if (index === question.answer) audio.play('learn'); }}><span className="choice-letter">{['ア', 'イ', 'ウ', 'エ'][index]}</span><span>{choice}</span><b aria-hidden="true">›</b></button>)}</div>
+          </div><div className="notebook-tools"><div className="support-buttons"><button className="secondary" onClick={() => showSupport('hint')}>✦ ヒント</button><button className="secondary" onClick={() => showSupport('help')}>♡ たすけて</button></div><button className="text-button exchange" onClick={() => send({ type: 'exchange' })}>↻ まだ ならっていない · もんだいを かえる</button>{game.attempts >= 2 && <button className="text-button" onClick={() => send({ type: 'reveal' })}>こたえと せつめいを みる →</button>}</div></> : <div className="answer-feedback" aria-live="polite"><div className="answer-companion"><Animal kind={current!.character} size={155}/><span className="earned-star" aria-hidden="true">✦</span></div><div className="answer-content"><h3 tabIndex={-1}>{game.feedback === 'correct' ? '✦ できたね！' : '✦ いっしょに おぼえよう！'}</h3><AnswerExplanation question={question}/><p className="learning-earned">{game.turnIndex + 1}人めの {names[current!.character]}から、まなびの あかりが とどいた！</p><button className="primary full" data-testid="continue-answer" onClick={() => { audio.play('confirm'); send({ type: 'continue' }); }}>{game.turnsCompleted % 4 === 3 ? 'なかまを たすけに いく →' : 'もりの できごとへ →'}</button></div></div>}
+        </div>}
+
+        {game.phase === 'event' && <div className={`event-scene scene-enter ${isRescue ? 'rescue-panel' : 'encounter-scene'} ${isRescue && game.rescueProgress === 3 && game.turnsCompleted < 12 ? 'branch-scene' : ''}`}>
+          <div className="scene-caption"><p className="eyebrow">{isRescue ? game.rescueProgress === 3 ? 'おてつだい だいせいこう！' : 'みんなで おてつだい' : 'もりの できごと'}</p><h2 ref={focusRef} tabIndex={-1}>{isRescue ? chapters[chapter].title : story?.title}</h2></div>
+          {isRescue ? <RescueEvent chapter={chapter + 1} progress={game.rescueProgress} onStep={rescue} route={currentRoute} cinematic/> : <><div className="encounter-illustration" aria-hidden="true"><RescueAnimal kind={chapter} size={190}/><Animal kind={current!.character} size={132}/><span>{story?.symbol}</span></div><div className="encounter-dialogue"><p className="event-story">{story?.story}</p><p className="learning-earned">✦ おてつだいまで あと {4 - game.turnsCompleted % 4} まなび</p></div></>}
+          {(!isRescue || game.rescueProgress === 3) && <div className="event-exit">
+            {isRescue && game.turnsCompleted < 12 ? <><p className="route-label">つぎは どちらの みちへ？</p><div className="route-buttons route-cards">{routeChoices[chapter].map(choice => <button className={'route-card route-' + choice.route} key={choice.route} data-route={choice.route} onClick={() => { audio.play('confirm'); send({ type: 'next', route: choice.route }); }}><span className="route-symbol" aria-hidden="true">{choice.symbol}</span><strong>{choice.title}</strong><span>{choice.detail}</span><small>{choice.action}</small><b aria-hidden="true">→</b></button>)}</div></> : <button className="primary" data-testid="next-turn" onClick={() => { audio.play(game.turnsCompleted === 12 ? 'goal' : 'confirm'); send({ type: 'next' }); }}>{game.turnsCompleted === 12 ? 'みんなで ゴール！' : game.players.length === 1 ? 'つぎの ぼうけんへ →' : 'つぎの なかまへ →'}</button>}
+            {game.turnsCompleted < 12 && <div className="handoff-note"><Animal kind={game.players[nextPlayerIndex].character} size={34}/><span>つぎは {nextPlayerIndex + 1}人めの <strong>{names[game.players[nextPlayerIndex].character]}</strong>だよ。</span></div>}
           </div>}
-          {(game.phase === 'question' || game.phase === 'feedback') && question && <div className="question-scene"><div className="last-roll" data-dice={game.dice} data-start={game.position - (game.dice ?? 0)} data-end={game.position}><span aria-hidden="true">{['','⚀','⚁','⚂'][game.dice ?? 1]}</span><strong>{game.dice} の め · {game.dice}マス すすんだよ</strong><span>✓ とうちゃく</span></div><div className="question-meta"><span>{question.subject === 'math' ? 'さんすう' : 'こくご'}</span><small>{question.grade}年 · {question.unit}</small></div><h2 className="question-prompt" ref={focusRef} tabIndex={-1}>{question.prompt}</h2>{speechOn && game.phase === 'question' && <button className="text-button speak-button" onClick={speak}>♪ もんだいを きく</button>}{game.phase === 'question' && <LearningSupport question={question} attempts={game.attempts} hintUsed={game.hintUsed} helpUsed={game.helpUsed} exchangeNotice={exchangeNotice} onChoose={chooseAnswer}/>}<div className="choices">{question.choices.map((choice, index) => <button key={question.id + index} className={`choice ${game.phase === 'feedback' && index === question.answer ? 'correct' : ''} ${game.phase === 'question' && game.attempts > 0 && game.selectedChoice === index ? 'tried' : ''}`} disabled={game.phase !== 'question'} onClick={event => { if (event.detail > 1) return; stopSpeech(); send({ type: 'answer', choice: index }); if (index === question.answer) playSound(); }}><span className="choice-letter">{['ア', 'イ', 'ウ', 'エ'][index]}</span><span>{choice}</span>{game.phase === 'feedback' && index === question.answer && <span className="correct-mark">✓</span>}</button>)}</div>
-            {game.phase === 'question' ? <><div className="support-buttons"><button className="secondary" onClick={() => showSupport('hint')}>✦ ヒント</button><button className="secondary" onClick={() => showSupport('help')}>♡ たすけて</button></div><button className="text-button exchange" onClick={() => send({ type: 'exchange' })}>↻ まだ ならっていない · もんだいを かえる</button>{game.attempts >= 2 && <button className="text-button" onClick={() => send({ type: 'reveal' })}>こたえと せつめいを みる →</button>}</> : <div className="answer-feedback" aria-live="polite"><h3 tabIndex={-1}>{game.feedback === 'correct' ? '✦ できたね！' : '✦ いっしょに おぼえよう！'}</h3><AnswerExplanation question={question}/><p className="learning-earned">✦ {game.turnIndex + 1}人めの {names[current!.character]}が、まなびの あかりを ひとつ とどけた！</p><button className="primary full" data-testid="continue-answer" onClick={() => send({ type: 'continue' })}>{game.turnsCompleted % 4 === 3 ? 'なかまを たすけに いく →' : 'もりの できごとへ →'}</button></div>}
-          </div>}
-          {game.phase === 'event' && <div className={'event-scene ' + (isRescue ? 'rescue-panel' : '')}>
-            <p className="eyebrow">{isRescue ? game.rescueProgress === 3 ? 'おてつだい だいせいこう！' : 'みんなの おてつだい' : 'えらんだ みちの ものがたり'}</p>
-            <h2 ref={focusRef} tabIndex={-1}>{isRescue ? chapters[chapter].title : story?.title}</h2>
-            {isRescue ? <RescueEvent chapter={chapter + 1} progress={game.rescueProgress} onStep={rescue} route={currentRoute}/> : <><div className="encounter-illustration" aria-hidden="true"><RescueAnimal kind={chapter} size={92}/><span>{story?.symbol}</span></div><p className="event-story">{story?.story}</p><p className="learning-earned">✦ おてつだいまで あと {4 - game.turnsCompleted % 4} まなび</p></>}
-            {(!isRescue || game.rescueProgress === 3) && <>
-              {isRescue && game.turnsCompleted < 12 ? <><p className="route-label">つぎは どちらの みちへ？<small>みちと おてつだいが かわるよ。マスの かずは おなじ。</small></p><div className="route-buttons route-cards">{routeChoices[chapter].map(choice => <button className={'route-card route-' + choice.route} key={choice.route} data-route={choice.route} onClick={() => send({ type: 'next', route: choice.route })}><span className="route-symbol" aria-hidden="true">{choice.symbol}</span><strong>{choice.title}</strong><span>{choice.detail}</span><small>{choice.action}</small><b aria-hidden="true">→</b></button>)}</div></> : <button className="primary full" data-testid="next-turn" onClick={() => send({ type: 'next' })}>{game.turnsCompleted === 12 ? 'みんなで ゴール！' : game.players.length === 1 ? 'つぎの ぼうけんへ →' : 'つぎの なかまへ →'}</button>}
-              {game.turnsCompleted < 12 && <div className="handoff-note"><Animal kind={game.players[nextPlayerIndex].character} size={42}/><span>つぎは {nextPlayerIndex + 1}人めの <strong>{names[game.players[nextPlayerIndex].character]}</strong>だよ。</span></div>}
-            </>}
-          </div>}
-          {game.phase === 'goal' && <div className="goal-scene"><div className="goal-confetti" aria-hidden="true">{Array.from({length:12},(_,index) => <i key={index} style={{'--i':index} as CSSProperties}/>)}</div><div className="celebration" aria-hidden="true">✦ ⚑ ✦</div><p className="eyebrow">ぼうけん だいせいこう</p><h2 ref={focusRef} tabIndex={-1}>みんなで、<br/>たどりついたね！</h2><p>3びきの なかまを たすけたよ。<br/>かんがえる 力を あわせて、<br/>12この まなびを みつけたね。</p><JourneyRecap game={game}/><button className="primary full" onClick={() => { updateGame(createGame(game.players, questions)); setNotice(''); }}>おなじ なかまで もういちど ↻</button><button className="text-button" onClick={restart}>なかまを えらびなおす →</button></div>}
-        </section></div>
-        <section className="team-strip" aria-label="冒険の仲間">{game.players.map((p, index) => <div className={`team-member ${game.turnIndex === index && game.phase !== 'goal' ? 'active' : ''}`} key={p.id}><Animal kind={p.character} size={54}/><div><small>{index + 1}人め · {p.grade}年</small><strong>{names[p.character]}</strong></div><span>{game.turnIndex === index && game.phase !== 'goal' ? `いまの ばん · ${game.completedByPlayer[index]}もん おわり` : `${game.completedByPlayer[index]}もん おわり`}</span></div>)}</section>
-        <div className="save-strip"><p data-testid="save-status" data-state={unsaved ? 'unsaved' : 'saved'}>{unsaved ? 'いまの つづきは、まだ ほぞんしていないよ。' : '✓ いまの つづきを ほぞんしてあるよ。'}<small>とじる まえに、この たんまつへ のこせるよ。</small></p><button className="secondary" onClick={save}>ここまでを ほぞん</button></div>
-      </>}
+        </div>}
+
+        {game.phase === 'goal' && <div className="goal-scene scene-enter"><div className="goal-confetti" aria-hidden="true">{Array.from({length:12},(_,index) => <i key={index} style={{'--i':index} as CSSProperties}/>)}</div><div className="goal-heading"><div className="celebration" aria-hidden="true">✦ ⚑ ✦</div><p className="eyebrow">ぼうけん だいせいこう</p><h2 ref={focusRef} tabIndex={-1}>みんなで、<br/>たどりついたね！</h2><TitleCaravan className="goal-caravan" characters={game.players.map(player => player.character)}/><p>3びきの なかまを たすけたよ。<br/>12この まなびが、みんなの ちからに。</p></div><div className="goal-record"><JourneyRecap game={game}/><button className="primary full" onClick={() => { audio.play('confirm'); updateGame(createGame(game.players, questions)); setNotice(''); }}>おなじ なかまで もういちど ↻</button><button className="text-button" onClick={restart}>なかまを えらびなおす →</button></div></div>}
+      </section>}
       {notice && <div className="notice" role="status">{notice}<button aria-label="おしらせを閉じる" onClick={() => setNotice('')}>×</button></div>}
     </main>
-    <footer inert={modalOpen}><span>まなびの冒険すごろく</span><span>こくごと さんすうで、ちいさな 一歩。</span><a href="https://github.com/metaborin/manabi-sugoroku" target="_blank" rel="noreferrer">この ゲームについて ↗</a></footer>
-    {modalOpen && <div className="modal-backdrop"><div className="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title" ref={modalRef}>
-      {confirmErase ? <><h2 id="modal-title">ほぞんした つづきを けす？</h2><p>ほぞんした ぼうけんには、もどれなくなるよ。<br/>いま あそんでいる ぼうけんは つづくよ。</p>{saved && <SaveSummary saved={saved} compact/>}<button className="primary full" data-dialog-initial-focus onClick={() => setConfirmErase(false)}>けさずに もどる</button><button className="secondary full" onClick={eraseSaved}>ほぞんを けす</button>{notice && <p role="status">{notice}</p>}</> : confirmRestart ? <><h2 id="modal-title">はじめから あそぶ？</h2><p>いまの ぼうけんは おわるよ。<br/>ほぞんした つづきは のこるよ。</p><button className="primary full" onClick={() => setConfirmRestart(false)}>いまの ぼうけんに もどる</button><button className="secondary full" onClick={restart}>はじめから あそぶ</button></> : settings ? <><h2 id="modal-title">あそびやすく せってい</h2><label className="field-label">こうかおんの おおきさ<select value={volume} onChange={e => setVolume(Number(e.target.value))}><option value={0}>オフ（おとは でない）</option><option value={20}>ちいさい</option><option value={50}>ふつう</option></select></label><label className="check-label"><input type="checkbox" checked={speechOn} onChange={e => { setSpeechOn(e.target.checked); stopSpeech(); }}/>もんだいの よみあげボタンを つかう</label><p className="setting-help">たんまつの 日本語音声が ある ときだけ つかえます。よみかたを こたえる もんだいは よみません。</p><label className="check-label"><input type="checkbox" checked={reducedMotion} disabled={systemReduced} onChange={e => setShortMotion(e.target.checked)}/>うごきを みじかくする</label><p className="setting-help">{systemReduced ? 'たんまつの「動きを減らす」に あわせています。' : 'サイコロの かいてんを へらし、はやく すすみます。'}</p><button className="primary full" onClick={() => setSettings(false)}>とじる</button>{saved && <button className="text-button" onClick={() => { setConfirmErase(true); setNotice(''); }}>ほぞんした つづきを けす</button>}</> : <><p className="eyebrow">ゆっくり ひとやすみ</p><h2 id="modal-title">ぼうけんは まっているよ。</h2><p>とじる ときは「ほぞん」を おしてね。<br/>この たんまつで つづきから あそべるよ。</p><p className="pause-save-status" data-testid="pause-save-status">{unsaved ? 'いまの つづきは、まだ ほぞんしていないよ。' : '✓ いまの つづきを ほぞんしてあるよ。'}</p>{saved && <SaveSummary saved={saved} compact/>}<button className="primary full" onClick={() => setPaused(false)}>ぼうけんを つづける →</button><button className="secondary full" onClick={save}>ここまでを ほぞん</button><button className="text-button" onClick={() => setConfirmRestart(true)}>はじめから あそぶ</button>{notice && <p role="status">{notice}</p>}</>}
+    {modalOpen && <div className="modal-backdrop"><div className="modal game-menu" role="dialog" aria-modal="true" aria-labelledby="modal-title" ref={modalRef}>
+      {information ? <><p className="eyebrow">まなびの 冒険すごろく</p><h2 id="modal-title">おうちの方へ</h2><p>1台で1〜4人が交代する協力型ゲームです。小1〜6年の国語・算数から各学年20問、全120問を収録。学年の一部単元で、全範囲対応ではありません。</p><p>本名・アカウントは不要です。学年や進行状況は端末の中だけに保持し、「ほぞん」を押したときだけ、このブラウザに保存します。自動保存ではありません。</p><p>音と読み上げは初期状態ではオフです。読み上げは端末内の日本語音声がある場合に使えます。</p><button className="primary full" onClick={() => setInformation(false)}>とじる</button></> : confirmErase ? <><h2 id="modal-title">ほぞんした つづきを けす？</h2><p>ほぞんした ぼうけんには、もどれなくなるよ。<br/>いま あそんでいる ぼうけんは つづくよ。</p>{saved && <SaveSummary saved={saved} compact/>}<button className="primary full" data-dialog-initial-focus onClick={() => setConfirmErase(false)}>けさずに もどる</button><button className="secondary full" onClick={eraseSaved}>ほぞんを けす</button>{notice && <p role="status">{notice}</p>}</> : confirmRestart ? <><h2 id="modal-title">はじめから あそぶ？</h2><p>いまの ぼうけんは おわるよ。<br/>ほぞんした つづきは のこるよ。</p><button className="primary full" onClick={() => setConfirmRestart(false)}>いまの ぼうけんに もどる</button><button className="secondary full" onClick={restart}>はじめから あそぶ</button></> : settings ? <><h2 id="modal-title">あそびやすく せってい</h2><label className="field-label">こうかおんの おおきさ<select value={volume} onChange={e => setVolume(Number(e.target.value))}><option value={0}>オフ（おとは でない）</option><option value={20}>ちいさい</option><option value={50}>ふつう</option></select></label><label className="check-label"><input type="checkbox" checked={speechOn} onChange={e => { setSpeechOn(e.target.checked); stopSpeech(); }}/>もんだいの よみあげボタンを つかう</label><p className="setting-help">たんまつの 日本語音声が ある ときだけ つかえます。よみかたを こたえる もんだいは よみません。</p><label className="check-label"><input type="checkbox" checked={reducedMotion} disabled={systemReduced} onChange={e => setShortMotion(e.target.checked)}/>うごきを みじかくする</label><p className="setting-help">{systemReduced ? 'たんまつの「動きを減らす」に あわせています。' : 'サイコロの かいてんを へらし、はやく すすみます。'}</p><button className="primary full" onClick={() => setSettings(false)}>とじる</button>{saved && <button className="text-button" onClick={() => { setConfirmErase(true); setNotice(''); }}>ほぞんした つづきを けす</button>}</> : <><p className="eyebrow">ぼうけんメニュー</p><h2 id="modal-title">ぼうけんは まっているよ。</h2><button className="primary full" onClick={() => setPaused(false)}>ぼうけんを つづける →</button><p className="pause-save-status" data-testid="pause-save-status"><span data-testid="save-status" data-state={unsaved ? 'unsaved' : 'saved'}>{unsaved ? 'いまの つづきは、まだ ほぞんしていないよ。' : '✓ いまの つづきを ほぞんしてあるよ。'}</span></p><button className="secondary full" onClick={save}>ここまでを ほぞん</button>{saved && <SaveSummary saved={saved} compact/>}<details className="party-record"><summary>なかまの ぼうけんの きろく</summary><section className="team-strip" aria-label="冒険の仲間">{game?.players.map((p,index)=><div className="team-member" key={p.id}><Animal kind={p.character} size={42}/><div><small>{index+1}人め · {p.grade}年</small><strong>{names[p.character]}</strong></div><span>{game.completedByPlayer[index]}もん おわり</span></div>)}</section></details><button className="text-button" onClick={() => setConfirmRestart(true)}>はじめから あそぶ</button>{notice && <p role="status">{notice}</p>}</>}
     </div></div>}
   </div>;
 }

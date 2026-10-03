@@ -1,0 +1,156 @@
+.world-scenery {
+  --world-sky-top: #315f59;
+  --world-sky-bottom: #73917a;
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  border-radius: inherit;
+  pointer-events: none;
+  user-select: none;
+  background: #336758;
+  contain: layout paint;
+}
+
+.world-scenery--camp {
+  --world-sky-top: #63826c;
+  --world-sky-bottom: #9ba881;
+}
+
+.world-scenery--adventure {
+  --world-sky-top: #356763;
+  --world-sky-bottom: #7e9d7f;
+}
+
+.world-scenery__painting {
+  display: block;
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+.world-scenery__shade {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, rgb(13 48 43 / .15), transparent 24% 77%, rgb(13 48 43 / .17)), linear-gradient(0deg, rgb(13 48 43 / .22), transparent 24% 72%, rgb(13 48 43 / .1));
+}
+
+.world-scenery--camp .world-scenery__shade {
+  opacity: .6;
+}
+
+.world-scenery__mote {
+  animation: world-mote-glow 7s ease-in-out infinite;
+}
+
+.world-scenery__mote--1 {
+  animation-delay: -2.4s;
+}
+
+.world-scenery__mote--2 {
+  animation-delay: -4.6s;
+}
+
+.title-caravan {
+  position: relative;
+  width: min(45vw, 600px);
+  aspect-ratio: 600 / 390;
+  isolation: isolate;
+  pointer-events: none;
+  user-select: none;
+}
+
+.title-caravan__ground {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  z-index: 0;
+  overflow: visible;
+}
+
+.title-caravan__wagon {
+  position: absolute;
+  left: 11%;
+  bottom: 13.2%;
+  width: 83%;
+  z-index: 1;
+  transform-origin: 51% 82%;
+  animation: world-wagon-sway 8s ease-in-out infinite;
+}
+
+.title-caravan__wagon > svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  overflow: visible;
+}
+
+.title-caravan__companion {
+  position: absolute;
+  bottom: 7.5%;
+  width: 24.2%;
+  z-index: 2;
+  transform-origin: 50% 91%;
+}
+
+.title-caravan__companion > svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  overflow: visible;
+}
+
+.title-caravan__companion--0 {
+  left: 6%;
+  transform: rotate(-5deg);
+}
+
+.title-caravan__companion--1 {
+  right: 4%;
+  bottom: 4.5%;
+  transform: rotate(5deg);
+}
+
+@keyframes world-mote-glow {
+  0%, 100% { opacity: .4; }
+  45%, 62% { opacity: .95; }
+}
+
+@keyframes world-wagon-sway {
+  0%, 100% { transform: translateY(0) rotate(-3deg); }
+  50% { transform: translateY(-3px) rotate(-2deg); }
+}
+
+.short-motion .world-scenery__mote,
+.short-motion .title-caravan__wagon {
+  animation: none;
+}
+
+.short-motion .title-caravan__wagon {
+  transform: rotate(-3deg);
+}
+
+@media (max-width: 720px) {
+  .title-caravan {
+    width: min(86vw, 440px);
+  }
+
+  .world-scenery__shade {
+    background: linear-gradient(0deg, rgb(13 48 43 / .27), transparent 33% 75%, rgb(13 48 43 / .15));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .world-scenery__mote,
+  .title-caravan__wagon {
+    animation: none;
+  }
+
+  .title-caravan__wagon {
+    transform: rotate(-3deg);
+  }
+}

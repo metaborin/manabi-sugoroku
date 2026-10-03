@@ -2,6 +2,7 @@ import { test, expect } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import { questions } from '../src/questions';
 import type { Question } from '../src/types';
+import { configureParty, openPause, openSetup, rememberMap, rememberedMap, resumePause, resumeSavedAdventure, saveAdventure } from './ui-helpers';
 
 const browserErrors = new WeakMap<Page, string[]>();
 const lastRescueAction = new WeakMap<Page, number>();
@@ -19,17 +20,18 @@ test.afterEach(async ({ page }) => {
 });
 
 async function configure(page: Page, grades: number[]) {
-  await page.getByRole('group', { name: 'あそぶ人数', exact: true }).getByRole('button', { name: `${grades.length}人`, exact: true }).click();
-  for (const [index, grade] of grades.entries()) await page.getByLabel(`${index + 1}人めの学年`, { exact: true }).selectOption(String(grade));
+  await configureParty(page, grades);
 }
 
 async function start(page: Page, grades: number[]) {
   await configure(page, grades);
   await page.getByRole('button', { name: /ぼうけんに しゅっぱつ/ }).click();
   await expect(page.getByRole('heading', { name: 'サイコロを ふろう' })).toBeVisible();
+  await rememberMap(page);
 }
 
 async function roll(page: Page) {
+  await rememberMap(page);
   await page.getByRole('button', { name: /サイコロを ふる/ }).click();
   await expect(page.locator('.question-prompt')).toBeVisible();
 }
@@ -76,8 +78,8 @@ async function completeRescue(page: Page, completed: number, capture = false) {
   await expect(page.getByTestId('rescue-event')).toHaveAttribute('data-progress', '0');
   await expect(page.locator('.mission')).toContainText(`${completed / 4 - 1} / 3 びき`);
   await expect(page.locator('button[data-route], [data-testid="next-turn"]')).toHaveCount(0);
-  const position = Number((await page.locator('.board-bottom span').last().innerText()).match(/\d+/)![0]);
-  const checkpoints = await page.locator('.board-panel [data-checkpoint="true"]').evaluateAll(nodes => nodes.map(node => Number(node.getAttribute('data-square'))));
+  const position = Number(await page.locator('.journey-position').getAttribute('data-position'));
+  const checkpoints = rememberedMap(page).checkpoints;
   expect(checkpoints).toHaveLength(3);
   expect(position, 'the rescue is exactly at its cumulative four-roll checkpoint').toBe(checkpoints[completed / 4 - 1]);
   for (let progress = 0; progress < 3; progress += 1) {
@@ -95,12 +97,13 @@ async function eventAndNext(page: Page, completed: number, route: 'forest' | 'ri
   if (completed % 4 === 0) await completeRescue(page, completed, capture);
   if (completed === 4 || completed === 8) {
     const chapter = completed / 4 + 1;
-    const previousGeometry = await page.locator(`[data-chapter-path="${chapter}"] path`).first().getAttribute('d');
+    const previousGeometry = rememberedMap(page).paths[String(chapter)];
     await page.locator(`button[data-route="${route}"]`).click();
     await expect(page.locator(`[data-chapter-path="${chapter}"]`)).toHaveAttribute('data-route', route);
     await expect(page.locator(`[data-landscape="chapter-${chapter}-${route}"]`)).toHaveCount(1);
     await expect(page.locator(`[data-landscape="chapter-${chapter}-${route === 'river' ? 'forest' : 'river'}"]`)).toHaveCount(0);
     if (route === 'river') expect(await page.locator(`[data-chapter-path="${chapter}"] path`).first().getAttribute('d')).not.toBe(previousGeometry);
+    await rememberMap(page);
   } else {
     await page.getByTestId('next-turn').click();
   }
@@ -125,10 +128,10 @@ for (const grades of [[1], [2, 6], [1, 6, 3, 5]]) {
         await expect(page.locator('.hint-box')).toContainText(question.hint);
         await page.getByRole('button', { name: /たすけて/ }).click();
         await expect(page.locator('.help-box')).toContainText('さいごは じぶんで');
-        const position = await page.locator('.board-bottom span').last().innerText();
+        const position = await page.locator('.journey-position').innerText();
         await page.locator('.choice').nth((question.answer + 1) % question.choices.length).click();
         await expect(page.locator('.retry-note')).toBeVisible();
-        await expect(page.locator('.board-bottom span').last()).toHaveText(position);
+        await expect(page.locator('.journey-position')).toHaveText(position);
         await expect(page.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '0');
         await page.getByRole('button', { name: /もんだいを かえる/ }).click();
         const replacement = await displayedQuestion(page);
@@ -161,7 +164,7 @@ for (const grades of [[1], [2, 6], [1, 6, 3, 5]]) {
     for (let index = 0; index < grades.length; index += 1) await expect(page.locator('.goal-party > div').nth(index)).toContainText(`${12 / grades.length}もん`);
     await expect(page.locator('.mission')).toContainText('3 / 3 びき');
     await expect(page.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '12');
-    const boardPosition = await page.locator('.board-bottom span').last().innerText();
+    const boardPosition = await page.locator('.journey-position').innerText();
     const [position, distance] = boardPosition.match(/\d+/g)!.map(Number);
     expect(position).toBe(distance);
     await noOverflow(page);
@@ -170,7 +173,14 @@ for (const grades of [[1], [2, 6], [1, 6, 3, 5]]) {
     await expect(page.getByRole('heading', { name: 'サイコロを ふろう' })).toBeVisible();
     await expect(page.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '0');
     await expect(page.locator('.turn-banner')).toContainText('1人め');
+    await openPause(page);
+    await page.getByRole('dialog').locator('.party-record summary').click();
     await expect(page.locator('.team-member')).toHaveCount(grades.length);
+    for (const [index, grade] of grades.entries()) {
+      await expect(page.locator('.team-member').nth(index)).toContainText(`${grade}年`);
+      await expect(page.locator('.team-member').nth(index)).toContainText('0もん おわり');
+    }
+    await resumePause(page);
   });
 }
 
@@ -206,10 +216,10 @@ test('browser Back pauses, cancelling restart keeps the question, explicit save 
   await dialog.getByRole('button', { name: /ぼうけんを つづける/ }).click();
   expect((await displayedQuestion(page)).id).toBe(original.id);
   await expect(page.locator('.hint-box')).toBeVisible();
-  await page.getByRole('button', { name: 'ここまでを ほぞん', exact: true }).click();
+  await saveAdventure(page);
   expect(await page.evaluate(() => localStorage.getItem('manabi-sugoroku-save-v1'))).not.toBeNull();
   await page.reload();
-  await page.getByRole('button', { name: /ほぞんした つづきから/ }).click();
+  await resumeSavedAdventure(page);
   expect((await displayedQuestion(page)).id).toBe(original.id);
   await expect(page.locator('.hint-box')).toBeVisible();
   await expect(page.locator('.turn-banner')).toContainText('1人め ・ 小学3年');
@@ -315,7 +325,7 @@ test('rescue double click does one step, keyboard works, and a middle-step save 
   await expect(page.getByTestId('rescue-event')).toHaveAttribute('data-progress', '1');
   await expect(page.locator('.mission')).toContainText('0 / 3 びき');
   await expect(page.locator('button[data-route]')).toHaveCount(0);
-  const savedPosition = await page.locator('.board-bottom span').last().innerText();
+  const savedPosition = await page.locator('.journey-position').innerText();
   await page.getByRole('button', { name: /ひとやすみ/ }).focus();
   await page.keyboard.press('Enter');
   const dialog = page.getByRole('dialog');
@@ -330,10 +340,10 @@ test('rescue double click does one step, keyboard works, and a middle-step save 
   await page.keyboard.press('Enter');
   await expect(dialog.getByRole('status')).toContainText('ほぞんしたよ');
   await page.reload();
-  await page.getByRole('button', { name: /ほぞんした つづきから/ }).click();
+  await resumeSavedAdventure(page);
   await expect(page.getByTestId('rescue-event')).toHaveAttribute('data-progress', '1');
   await expect(page.locator('.mission')).toContainText('0 / 3 びき');
-  await expect(page.locator('.board-bottom span').last()).toHaveText(savedPosition);
+  await expect(page.locator('.journey-position')).toHaveText(savedPosition);
   await expect(page.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '4');
   await rescueStep(page, 1, true);
   await expect(page.getByTestId('rescue-action')).toBeFocused();
@@ -355,7 +365,7 @@ test('full movement visits every rolled square and chapter one ends at its real 
     const samples = page.evaluate(() => new Promise<number[]>(resolve => {
       const positions: number[] = [];
       const observer = new MutationObserver(() => {
-        const raw = document.querySelector('.board-bottom span:last-child')?.textContent ?? '';
+        const raw = document.querySelector('.journey-position')?.textContent ?? '';
         const value = Number(raw.match(/\d+/)?.[0]);
         if (Number.isFinite(value) && positions.at(-1) !== value) positions.push(value);
         if (document.querySelector('.question-prompt')) { observer.disconnect(); resolve(positions); }
@@ -369,12 +379,12 @@ test('full movement visits every rolled square and chapter one ends at its real 
     const visited = await samples;
     expect(visited).toEqual(Array.from({ length: dice + 1 }, (_, index) => position + index));
     position += dice;
-    await expect(page.locator('.board-bottom span').last()).toHaveText(new RegExp(`^${position} /`));
+    await expect(page.locator('.journey-position')).toHaveText(new RegExp(`^${position} /`));
     await correct(page);
     if (turn < 4) await eventAndNext(page, turn);
     else await openEvent(page, turn);
   }
-  expect(Number(await page.locator('.board-panel [data-checkpoint="true"]').first().getAttribute('data-square'))).toBe(position);
+  expect(rememberedMap(page).checkpoints[0]).toBe(position);
   await completeRescue(page, 4);
 });
 
@@ -402,9 +412,12 @@ test.describe('touch and narrow layout', () => {
 
   test('390 px touch setup, question, assistance and modal fit without horizontal overflow', async ({ page }) => {
     await noOverflow(page);
+    await page.getByTestId('new-adventure').tap();
+    await openSetup(page);
     await page.getByRole('group', { name: 'あそぶ人数', exact: true }).getByRole('button', { name: '4人', exact: true }).tap();
     await noOverflow(page);
     await page.getByRole('button', { name: /ぼうけんに しゅっぱつ/ }).tap();
+    await rememberMap(page);
     await page.getByRole('button', { name: /サイコロを ふる/ }).tap();
     await expect(page.locator('.question-prompt')).toBeVisible();
     await noOverflow(page);

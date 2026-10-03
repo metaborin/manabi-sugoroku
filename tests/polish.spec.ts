@@ -2,6 +2,7 @@ import { test, expect } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import { questions } from '../src/questions';
 import type { Question } from '../src/types';
+import { configureParty, expectSavedState, openSavedPreview, openSetup, resumeSavedAdventure, saveAdventure, selectPlayer } from './ui-helpers';
 
 const saveKey = 'manabi-sugoroku-save-v1';
 const pageErrors = new WeakMap<Page, string[]>();
@@ -19,11 +20,11 @@ test.afterEach(async ({ page }) => {
 });
 
 async function configure(page: Page, grades: number[]) {
-  await page.getByRole('group', { name: 'あそぶ人数', exact: true }).getByRole('button', { name: `${grades.length}人`, exact: true }).click();
-  for (const [index, grade] of grades.entries()) await page.getByLabel(`${index + 1}人めの学年`, { exact: true }).selectOption(String(grade));
+  await configureParty(page, grades);
 }
 
 async function start(page: Page) {
+  await openSetup(page);
   await page.getByRole('button', { name: /ぼうけんに しゅっぱつ/ }).click();
   await expect(page.locator('.roll-scene')).toBeVisible();
 }
@@ -68,6 +69,7 @@ test('saved mixed-grade review party restores its question, duplicate characters
   const units = [...new Set(questions.filter(question => question.grade === 4).map(question => question.unit))];
   for (const candidate of units) if (candidate !== unit) await firstSetup.getByLabel(candidate, { exact: true }).uncheck();
   for (let index = 1; index <= 2; index += 1) {
+    await selectPlayer(page, index - 1);
     await page.getByRole('group', { name: `${index}人めのキャラクター`, exact: true }).getByRole('button', { name: 'こむぎ', exact: true }).click();
   }
   await start(page);
@@ -78,11 +80,11 @@ test('saved mixed-grade review party restores its question, duplicate characters
   expect(original.grade).toBe(4);
   expect(original.unit).toBe(unit);
   await page.getByRole('button', { name: /ヒント/ }).click();
-  await page.getByRole('button', { name: 'ここまでを ほぞん', exact: true }).click();
-  await expect(page.getByTestId('save-status')).toHaveAttribute('data-state', 'saved');
+  await saveAdventure(page);
   const snapshot = await savedText(page);
   expect(snapshot).not.toBeNull();
   await page.reload();
+  await openSavedPreview(page);
   const summary = page.getByTestId('save-summary');
   await expect(summary).toContainText('2人の なかま');
   await expect(summary).toContainText('0 / 12 まなび');
@@ -91,12 +93,12 @@ test('saved mixed-grade review party restores its question, duplicate characters
   await expect(summary).toContainText('4年の ふくしゅう');
   await expect(summary).toContainText('2人め · 6年');
   expect(await savedText(page)).toBe(snapshot);
-  await page.getByRole('button', { name: /ほぞんした つづきから/ }).click();
+  await resumeSavedAdventure(page);
   expect((await displayedQuestion(page)).id).toBe(original.id);
   await expect(page.locator('.hint-box')).toContainText(original.hint);
-  await expect(page.getByTestId('save-status')).toHaveAttribute('data-state', 'saved');
+  await expectSavedState(page, 'saved');
   await correct(page);
-  await expect(page.getByTestId('save-status')).toHaveAttribute('data-state', 'unsaved');
+  await expectSavedState(page, 'unsaved');
   await ordinaryEventAndNext(page, 1);
   await expect(page.locator('.turn-banner strong')).toContainText('2人め');
   await expect(page.locator('.turn-banner strong')).toContainText('こむぎ');
@@ -109,14 +111,16 @@ test('saved mixed-grade review party restores its question, duplicate characters
   await dialog.getByRole('button', { name: 'はじめから あそぶ', exact: true }).click();
   await dialog.getByRole('button', { name: 'はじめから あそぶ', exact: true }).click();
   await expect(page.getByRole('group', { name: 'あそぶ人数', exact: true }).getByRole('button', { name: '2人', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await selectPlayer(page, 0);
   await expect(page.getByLabel('1人めの学年', { exact: true })).toHaveValue('5');
-  await expect(page.getByLabel('2人めの学年', { exact: true })).toHaveValue('6');
   await expect(firstSetup.getByLabel('ひとつ前の がくねんを ふくしゅう')).toBeChecked();
   await firstSetup.locator('summary').click();
   for (const candidate of units) await expect(firstSetup.getByLabel(candidate, { exact: true })).toBeChecked({ checked: candidate === unit });
   for (let index = 1; index <= 2; index += 1) {
+    await selectPlayer(page, index - 1);
     await expect(page.getByRole('group', { name: `${index}人めのキャラクター`, exact: true }).getByRole('button', { name: 'こむぎ', exact: true })).toHaveAttribute('aria-pressed', 'true');
   }
+  await expect(page.getByLabel('2人めの学年', { exact: true })).toHaveValue('6');
   expect(await savedText(page), 'returning to setup never replaces the explicitly saved adventure').toBe(snapshot);
 });
 
@@ -127,7 +131,7 @@ test.describe('support on a narrow touch screen', () => {
     await start(page);
     await roll(page);
     const question = await displayedQuestion(page);
-    const originalPosition = await page.locator('.board-bottom span').last().innerText();
+    const originalPosition = await page.locator('.journey-position').innerText();
     await page.getByRole('button', { name: /ヒント/ }).tap();
     const heading = page.getByTestId('learning-support');
     await expect(heading).toBeFocused();
@@ -143,7 +147,7 @@ test.describe('support on a narrow touch screen', () => {
     await expect(heading).toBeInViewport({ ratio: 1 });
     await expect(page.locator('.retry-note')).toBeVisible();
     await expect(page.locator('.hint-box p')).toBeInViewport({ ratio: 1 });
-    await expect(page.locator('.board-bottom span').last()).toHaveText(originalPosition);
+    await expect(page.locator('.journey-position')).toHaveText(originalPosition);
     await expect(page.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '0');
     await page.getByRole('button', { name: /たすけて/ }).tap();
     await expect(heading).toBeFocused();
@@ -161,7 +165,7 @@ test('exchanging an unfamiliar question clears prior support and attempts withou
   await start(page);
   await roll(page);
   const original = await displayedQuestion(page);
-  const position = await page.locator('.board-bottom span').last().innerText();
+  const position = await page.locator('.journey-position').innerText();
   await page.locator('.choice').nth((original.answer + 1) % original.choices.length).click();
   await page.getByRole('button', { name: /たすけて/ }).click();
   await expect(page.locator('.hint-box')).toBeVisible();
@@ -173,7 +177,7 @@ test('exchanging an unfamiliar question clears prior support and attempts withou
   await expect(page.locator('.retry-note, .hint-box, .help-box, .choice.tried')).toHaveCount(0);
   await expect(page.getByRole('button', { name: /こたえと せつめいを みる/ })).toHaveCount(0);
   await expect(page.locator('.exchange-notice')).toContainText('もんだいを かえたよ');
-  await expect(page.locator('.board-bottom span').last()).toHaveText(position);
+  await expect(page.locator('.journey-position')).toHaveText(position);
   await expect(page.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '0');
   await expect(page.locator('.turn-banner')).toContainText('1人め ・ 小学3年');
   await correct(page);
@@ -215,14 +219,13 @@ test('save deletion requires confirmation, cancel and Escape preserve the snapsh
   await start(page);
   await roll(page);
   const original = await displayedQuestion(page);
-  await expect(page.getByTestId('save-status')).toHaveAttribute('data-state', 'unsaved');
+  await expectSavedState(page, 'unsaved');
   expect(await savedText(page)).toBeNull();
-  await page.getByRole('button', { name: 'ここまでを ほぞん', exact: true }).click();
-  await expect(page.getByTestId('save-status')).toHaveAttribute('data-state', 'saved');
+  await saveAdventure(page);
   const snapshot = await savedText(page);
   expect(snapshot).not.toBeNull();
   await page.getByRole('button', { name: /ヒント/ }).click();
-  await expect(page.getByTestId('save-status')).toHaveAttribute('data-state', 'unsaved');
+  await expectSavedState(page, 'unsaved');
   expect(await savedText(page)).toBe(snapshot);
   await page.getByRole('button', { name: /せってい/ }).click();
   const dialog = page.getByRole('dialog');
@@ -256,7 +259,7 @@ test('save deletion requires confirmation, cancel and Escape preserve the snapsh
   await expect(page.getByRole('button', { name: /せってい/ })).toBeFocused();
   expect((await displayedQuestion(page)).id).toBe(original.id);
   await expect(page.locator('.hint-box')).toContainText(original.hint);
-  await expect(page.getByTestId('save-status')).toHaveAttribute('data-state', 'unsaved');
+  await expectSavedState(page, 'unsaved');
   await correct(page);
   await ordinaryEventAndNext(page, 1);
   await expect(page.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '1');
