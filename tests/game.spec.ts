@@ -59,9 +59,11 @@ async function openEvent(page: Page, completed: number) {
 }
 
 async function rescueStep(page: Page, progress: number, keyboard = false, touch = false) {
-  // A deliberate new action follows the visible scene update and the 280 ms input guard.
+  // A deliberate new action follows the scene update and the 280 ms input guard.
+  // Touch taps also need to be outside the browser's double-tap recognition window.
+  // The separate dblclick checks still exercise the accidental-repeat protection.
   const previousAction = lastRescueAction.get(page);
-  if (previousAction) await expect.poll(() => Date.now() - previousAction, { intervals: [50] }).toBeGreaterThanOrEqual(300);
+  if (previousAction) await expect.poll(() => Date.now() - previousAction, { intervals: [50] }).toBeGreaterThanOrEqual(touch ? 650 : 300);
   const button = page.getByTestId('rescue-action');
   await expect(page.getByTestId('rescue-event')).toHaveAttribute('data-progress', String(progress));
   await expect(button, 'the active rescue action fits in the viewport without manual scrolling').toBeInViewport({ ratio: 1 });
