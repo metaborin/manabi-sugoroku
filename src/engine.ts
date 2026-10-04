@@ -84,11 +84,15 @@ function shuffled<T>(items: readonly T[], random: () => number): T[] {
   return result;
 }
 
-function bankSignature(questions: readonly Question[]): string {
-  const data = JSON.stringify([...questions].sort((left, right) => left.id.localeCompare(right.id)).map(question => [
+function questionContent(question: Question): unknown[] {
+  return [
     question.id, question.grade, question.subject, question.unit, question.prerequisite, question.prompt,
     question.choices, question.answer, question.hint, question.explanation, question.speech, question.speechSafe,
-  ]));
+  ];
+}
+
+function bankSignature(questions: readonly Question[]): string {
+  const data = JSON.stringify([...questions].sort((left, right) => left.id.localeCompare(right.id)).map(questionContent));
   let hash = 0x811C9DC5;
   for (let index = 0; index < data.length; index += 1) hash = Math.imul(hash ^ data.charCodeAt(index), 0x01000193);
   return `v1-${(hash >>> 0).toString(16)}`;
@@ -155,12 +159,17 @@ function drawQuestion(state: GameState, exchange: boolean): GameState {
   if (exchange && candidates.length === 0) candidates = deck.filter(question => question.id !== state.questionId);
   if (candidates.length === 0) return state;
   let used = [...state.usedQuestionIds[state.turnIndex]!];
-  let next = candidates.find(question => !used.includes(question.id));
-  if (!next) {
+  let available = candidates.filter(question => !used.includes(question.id));
+  if (available.length === 0) {
     const candidateIds = new Set(candidates.map(question => question.id));
     used = used.filter(id => !candidateIds.has(id));
-    next = candidates[0]!;
+    available = candidates;
   }
+  // Keep each player's own unused pool and subject first. When there is a choice,
+  // avoid immediately repeating the question just seen by the previous companion.
+  const previousPlayer = (state.turnIndex + state.players.length - 1) % state.players.length;
+  const previousPeerQuestion = state.players.length > 1 ? state.usedQuestionIds[previousPlayer]!.at(-1) : undefined;
+  const next = available.find(question => question.id !== previousPeerQuestion) ?? available[0]!;
   used.push(next.id);
   const usedQuestionIds = state.usedQuestionIds.map((ids, index) => index === state.turnIndex ? used : ids);
   return { ...state, questionId: next.id, usedQuestionIds, attempts: 0, hintUsed: false,
@@ -242,13 +251,50 @@ function integer(value: unknown, minimum: number, maximum: number): value is num
   return typeof value === 'number' && Number.isInteger(value) && value >= minimum && value <= maximum;
 }
 
-/** Validate a local snapshot against the current fixed bank; corrupt/incompatible saves return null. */
-export function restoreGame(snapshot: unknown, questions: readonly Question[]): GameState | null {
+function sameDecks(value: unknown, expected: GameState['decks']): boolean {
+  return Array.isArray(value) && value.length === expected.length && expected.every((deck, index) => {
+    const stored: unknown = value[index];
+    return Array.isArray(stored) && stored.length === deck.length && deck.every((question, position) => {
+      const entry: unknown = stored[position];
+      return isRecord(entry) && entry.id === question.id && entry.subject === question.subject &&
+        entry.answer === question.answer && entry.choices === question.choices;
+    });
+  });
+}
+
+/** Known older banks are allowed only as unchanged subsets of the current bank. */
+function compatibleBank(signature: unknown, questions: readonly Question[], olderBanks: readonly (readonly Question[])[]): readonly Question[] | null {
+  const currentById = new Map(questions.map(question => [question.id, question]));
+  if (currentById.size !== questions.length) return null;
+  if (signature === bankSignature(questions)) return questions;
+  for (const older of olderBanks) {
+    if (signature !== bankSignature(older) || new Set(older.map(question => question.id)).size !== older.length) continue;
+    if (older.every(question => {
+      const current = currentById.get(question.id);
+      return current && JSON.stringify(questionContent(current)) === JSON.stringify(questionContent(question));
+    })) return older;
+  }
+  return null;
+}
+
+/**
+ * Validate against the exact current or explicitly supported historical bank.
+ * An ongoing older adventure keeps its bank signature and seeded decks. In particular,
+ * expanding an earlier player's deck must not shift later players' random sequence.
+ */
+export function restoreGame(snapshot: unknown, questions: readonly Question[], compatibleBanks: readonly (readonly Question[])[] = []): GameState | null {
   if (!isRecord(snapshot) || (snapshot.version !== 1 && snapshot.version !== 2) || !Array.isArray(snapshot.players) ||
       !integer(snapshot.seed, 0, 0xFFFFFFFF) || !integer(snapshot.token, 0, Number.MAX_SAFE_INTEGER)) return null;
+  const sourceBank = compatibleBank(snapshot.bankSignature, questions, compatibleBanks);
+  if (!sourceBank) return null;
   let base: GameState;
-  try { base = createGame(snapshot.players as Player[], questions, snapshot.seed); } catch { return null; }
-  if (snapshot.bankSignature !== base.bankSignature || JSON.stringify(snapshot.rolls) !== JSON.stringify(base.rolls)) return null;
+  try { base = createGame(snapshot.players as Player[], sourceBank, snapshot.seed); } catch { return null; }
+  if (base.players.some(player => {
+    const units = new Set(eligibleQuestions({ ...player, units: [] }, sourceBank).map(question => question.unit));
+    return player.units.some(unit => !units.has(unit));
+  })) return null;
+  if (snapshot.bankSignature !== base.bankSignature || JSON.stringify(snapshot.rolls) !== JSON.stringify(base.rolls) ||
+      !sameDecks(snapshot.decks, base.decks)) return null;
   if (!['roll', 'moving', 'question', 'feedback', 'event', 'goal'].includes(String(snapshot.phase)) ||
       !integer(snapshot.turnsCompleted, 0, base.totalTurns) || !integer(snapshot.turnIndex, 0, base.players.length - 1) ||
       !integer(snapshot.attempts, 0, Number.MAX_SAFE_INTEGER) || typeof snapshot.hintUsed !== 'boolean' ||
@@ -311,7 +357,12 @@ export function restoreGame(snapshot: unknown, questions: readonly Question[]): 
   if (snapshot.eventKind !== eventKind || snapshot.rescues !== rescues) return null;
   const completedByPlayer = base.players.map((_, index) => Math.floor(completed / base.players.length) + (index < completed % base.players.length ? 1 : 0));
   if (JSON.stringify(snapshot.completedByPlayer) !== JSON.stringify(completedByPlayer)) return null;
-  return { ...base, token: snapshot.token, phase, turnIndex: expectedIndex, turnsCompleted: completed,
+  // An old empty list meant all units available then, not units added in a later release.
+  // Make that old selection explicit so even a same-party replay keeps its learned scope.
+  const players = sourceBank === questions ? base.players : base.players.map(player => player.units.length ? player : {
+    ...player, units: [...new Set(eligibleQuestions(player, sourceBank).map(question => question.unit))],
+  });
+  return { ...base, players, token: snapshot.token, phase, turnIndex: expectedIndex, turnsCompleted: completed,
     completedByPlayer, position, dice, questionId: questionId as string | null,
     attempts: snapshot.attempts, hintUsed: snapshot.hintUsed, helpUsed: snapshot.helpUsed,
     selectedChoice: selectedChoice as number | null, feedback: feedback as GameState['feedback'],

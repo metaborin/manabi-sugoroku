@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { questions } from '../src/questions.ts';
+import { createHash } from 'node:crypto';
+import { questions, legacyQuestions } from '../src/questions.ts';
+import { reviewedAnswers as lowerMathUpperJapanese } from './fixtures/expanded-lower-math-upper-japanese.ts';
+import { reviewedAnswers as upperMathLowerJapanese } from './fixtures/expanded-upper-math-lower-japanese.ts';
 
 // These fixtures were calculated independently of the question-bank answer
 // fields. Keep them separate: a changed key must not validate itself.
@@ -46,15 +49,17 @@ function mathematicalValue(text: string): number {
   return Number(quantity[1]);
 }
 
-test('fixed bank has exactly 120 complete unique questions and 5 per unit', () => {
-  assert.equal(questions.length, 120);
-  assert.equal(new Set(questions.map(q => q.id)).size, 120);
+test('fixed bank has exactly 360 complete unique questions and 5 per unit', () => {
+  assert.equal(questions.length, 360);
+  assert.equal(new Set(questions.map(q => q.id)).size, 360);
+  assert.equal(new Set(questions.map(q => q.prompt.replace(/\s/gu, ''))).size, 360, 'no repeated prompt');
   for (const q of questions) {
     for (const field of ['id', 'unit', 'prerequisite', 'prompt', 'hint', 'explanation', 'speech', 'audit'] as const) {
       assert.equal(typeof q[field], 'string', `${q.id}:${field}`);
       assert.ok(q[field].trim().length > 0, `${q.id}:${field}`);
     }
-    assert.match(q.id, /^g[1-6]-[mj](0[1-9]|10)$/);
+    assert.match(q.id, /^g[1-6]-[mj](0[1-9]|[12][0-9]|30)$/);
+    assert.ok(q.id.startsWith(`g${q.grade}-${q.subject === 'math' ? 'm' : 'j'}`), `${q.id}: metadata`);
     assert.equal(q.choices.length, 3, q.id);
     assert.equal(new Set(q.choices).size, 3, q.id);
     assert.ok(q.choices.every(choice => choice.trim().length > 0), q.id);
@@ -67,11 +72,31 @@ test('fixed bank has exactly 120 complete unique questions and 5 per unit', () =
   for (let grade = 1; grade <= 6; grade++) {
     for (const subject of ['math', 'japanese']) {
       const pool = questions.filter(q => q.grade === grade && q.subject === subject);
-      assert.equal(pool.length, 10, `${grade}:${subject}`);
+      assert.equal(pool.length, 30, `${grade}:${subject}`);
       const units = [...new Set(pool.map(q => q.unit))];
-      assert.equal(units.length, 2, `${grade}:${subject}`);
+      assert.equal(units.length, 6, `${grade}:${subject}`);
       for (const unit of units) assert.equal(pool.filter(q => q.unit === unit).length, 5);
     }
+  }
+});
+
+test('published original 120 questions retain every field and their stable IDs', () => {
+  assert.equal(legacyQuestions.length, 120);
+  assert.equal(createHash('sha256').update(JSON.stringify(legacyQuestions)).digest('hex'),
+    'd789d580730c36ba5c5666665fa83df33f65a6a98a7757862d6c95581a8e75f0');
+  for (const original of legacyQuestions) assert.deepEqual(question(original.id), original);
+});
+
+test('all 240 additions match independently derived review keys', () => {
+  assert.equal(Object.keys(lowerMathUpperJapanese).length, 120);
+  assert.equal(Object.keys(upperMathLowerJapanese).length, 120);
+  const keys = { ...lowerMathUpperJapanese, ...upperMathLowerJapanese };
+  assert.equal(Object.keys(keys).length, 240, 'review assignments do not overlap');
+  const additions = questions.filter(q => Number(q.id.slice(-2)) > 10);
+  assert.deepEqual(Object.keys(keys).sort(), additions.map(q => q.id).sort());
+  for (const q of additions) {
+    assert.equal(q.choices[q.answer], keys[q.id], `${q.id}: independent answer`);
+    assert.equal(q.choices.filter(choice => choice === keys[q.id]).length, 1, `${q.id}: one answer`);
   }
 });
 
@@ -126,14 +151,17 @@ test('contextual reading targets use the reviewed MEXT grade allocation', () => 
 });
 
 test('reading/spelling prompts cannot reveal answers through speech and other text is kana', () => {
-  const spellingIds = new Set(['g1-j01', 'g1-j02', 'g1-j04', 'g1-j05']);
-  assert.equal(questions.filter(q => !q.speechSafe).length, 34);
-  assert.equal(questions.filter(q => q.speechSafe).length, 86);
+  const spellingIds = new Set(['g1-j01', 'g1-j02', 'g1-j04', 'g1-j05',
+    'g1-j11', 'g1-j12', 'g1-j13', 'g1-j14', 'g1-j15', 'g2-j16', 'g2-j17', 'g2-j18']);
+  assert.equal(legacyQuestions.filter(q => !q.speechSafe).length, 34);
+  assert.equal(legacyQuestions.filter(q => q.speechSafe).length, 86);
+  assert.equal(questions.filter(q => !q.speechSafe).length, 42);
   for (const q of questions) {
     if (spellingIds.has(q.id)) {
       assert.equal(q.speechSafe, false, q.id);
       assert.ok(q.speech.startsWith('これは、'), `${q.id}: neutral spelling instruction`);
     }
+    if (!q.speechSafe) assert.ok(q.speech.startsWith('これは、'), `${q.id}: neutral reading instruction`);
     for (const field of ['unit', 'prerequisite', 'prompt', 'hint', 'explanation', 'speech'] as const) {
       if (q.unit === 'かんじのよみ' && (field === 'prompt' || field === 'explanation')) continue;
       assert.doesNotMatch(q[field], /[一-龠]/u, `${q.id}:${field} non-target kanji without reading`);

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { checkpointPositions, createGame, eligibleQuestions, getQuestion, reducer, restoreGame } from '../src/engine.ts';
 import type { GameAction, GameState } from '../src/engine.ts';
 import type { Grade, Player, Question, Subject } from '../src/types.ts';
+import { legacyQuestions } from '../src/questions-legacy.ts';
 
 const questions: Question[] = [];
 for (let grade = 1; grade <= 6; grade += 1) {
@@ -441,4 +442,202 @@ test('movement snapshots reject visual partial positions and altered dice instea
   }
   assert.equal(restoreGame({ ...state, dice: state.dice! % 3 + 1 }, questions), null);
   assert.equal(restoreGame({ ...state, questionId: state.decks[state.turnIndex]![0]!.id }, questions), null);
+});
+
+// Exercise compatibility independently of the authored expansion's particular units.
+// The exact published 120 questions remain real; fixture additions cover both a
+// bigger old unit and an entirely new unit, so both kinds of accidental expansion fail.
+const expandedLegacyBank: Question[] = [...legacyQuestions, ...legacyQuestions.flatMap(question => [
+  { ...question, id: `fixture-same-${question.id}`, prompt: `extra same-unit ${question.id}` },
+  { ...question, id: `fixture-new-${question.id}`, unit: `new-${question.grade}-${question.subject}`, prompt: `extra new-unit ${question.id}` },
+])];
+const frozenLegacyPlayers = (state: GameState): Player[] => state.players.map(person => person.units.length ? clone(person) : {
+  ...person, units: [...new Set(eligibleQuestions(person, legacyQuestions).map(question => question.unit))],
+});
+const finishInBank = (state: GameState, bank: readonly Question[]) => act(act(state, {
+  type: 'answer', choice: getQuestion(state, bank)!.answer,
+}), { type: 'continue' });
+
+for (const grade of [1, 2, 3, 4, 5, 6] as Grade[]) {
+  test(`published 120-question v1/v2 saves for grade ${grade} retain every phase, later-player decks and learned units after expansion`, () => {
+    assert.equal(legacyQuestions.length, 120);
+    assert.equal(expandedLegacyBank.length, 360);
+    const mathUnit = legacyQuestions.find(question => question.grade === grade && question.subject === 'math')!.unit;
+    let state = createGame([
+      player(0, grade), player(1, grade, { units: [mathUnit] }),
+      player(2, grade, { review: grade > 1 }), player(3, grade),
+    ], legacyQuestions, 711 + grade);
+    const phases = new Set<string>();
+    const check = () => {
+      phases.add(state.phase);
+      const original = clone(state);
+      const expected = { ...state, players: frozenLegacyPlayers(state) };
+      const restored = restoreGame(clone(state), expandedLegacyBank, [legacyQuestions]);
+      assert.deepEqual(restored, expected, `v2 ${state.phase}, turn ${state.turnsCompleted}`);
+      assert.deepEqual(restored!.decks, state.decks, 'all four original seeded deck orders stay intact');
+      assert.equal(restored!.bankSignature, state.bankSignature, 'finish the ongoing adventure with its original bank');
+      assert.deepEqual(restoreGame(clone(restored), expandedLegacyBank, [legacyQuestions]), restored, 're-saving is stable');
+      if (state.questionId) assert.deepEqual(getQuestion(restored!, expandedLegacyBank), getQuestion(state, legacyQuestions));
+      const legacy: Record<string, unknown> = { ...clone(state), version: 1, rescues: Math.floor(state.turnsCompleted / 4) };
+      delete legacy.rescueProgress;
+      const completedRescue = state.phase === 'goal' || (state.phase === 'event' && state.eventKind !== 'rest');
+      const restoredV1 = restoreGame(legacy, expandedLegacyBank, [legacyQuestions]);
+      assert.deepEqual(restoredV1, { ...expected, rescues: Math.floor(state.turnsCompleted / 4), rescueProgress: completedRescue ? 3 : 0 });
+      assert.deepEqual(restoreGame(clone(restoredV1), expandedLegacyBank, [legacyQuestions]), restoredV1);
+      assert.deepEqual(state, original, 'neither the old snapshot nor its nested arrays are mutated');
+    };
+    check();
+    for (let turn = 0; turn < 12; turn += 1) {
+      state = act(state, { type: 'roll' }); check();
+      const pending = restoreGame(clone(state), expandedLegacyBank, [legacyQuestions])!;
+      assert.deepEqual(act(pending, { type: 'moveComplete' }), {
+        ...act(state, { type: 'moveComplete' }), players: frozenLegacyPlayers(state),
+      }, 'a pending roll lands on the same question after restoration');
+      state = act(state, { type: 'moveComplete' }); check();
+      state = act(state, { type: 'hint' }); check();
+      state = act(state, { type: 'help' }); check();
+      const question = getQuestion(state, legacyQuestions)!;
+      const wrong = (question.answer + 1) % question.choices.length;
+      state = act(state, { type: 'answer', choice: wrong }); check();
+      if (turn % 2 === 0) {
+        state = act(state, { type: 'answer', choice: wrong }); check();
+        state = act(state, { type: 'reveal' });
+      } else state = act(state, { type: 'answer', choice: question.answer });
+      check();
+      state = act(state, { type: 'continue' }); check();
+      if (state.eventKind !== 'rest') for (const step of [0, 1, 2]) {
+        state = act(state, { type: 'rescue', step }); check();
+      }
+      state = act(state, { type: 'next', route: 'river' }); check();
+    }
+    assert.deepEqual([...phases].sort(), ['event', 'feedback', 'goal', 'moving', 'question', 'roll']);
+    const completed = restoreGame(clone(state), expandedLegacyBank, [legacyQuestions])!;
+    const replay = createGame(completed.players, expandedLegacyBank, completed.seed);
+    assert.notEqual(replay.bankSignature, completed.bankSignature, 'a new adventure uses the current bank');
+    for (const person of replay.players) {
+      const oldUnits = new Set(eligibleQuestions({ ...person, units: [] }, legacyQuestions).map(question => question.unit));
+      assert.ok(eligibleQuestions(person, expandedLegacyBank).every(question => oldUnits.has(question.unit)), 'new units are not silently marked learned');
+    }
+    assert.notDeepEqual(replay.decks[3], completed.decks[3], 'the expanded bank would change the later player deck if rebuilt too early');
+  });
+}
+
+test('bank compatibility requires an explicitly known unchanged bank and rejects content edits, missing IDs and duplicates', () => {
+  const state = arrive(createGame([player(0, 6), player(1, 1)], legacyQuestions, 871));
+  assert.equal(restoreGame(state, expandedLegacyBank), null, 'unknown signatures are not accepted merely because IDs exist');
+  assert.equal(restoreGame({ ...state, bankSignature: 'unrecognized' }, expandedLegacyBank, [legacyQuestions]), null);
+  const mutations: Array<(question: Question) => void> = [
+    question => { question.prompt += ' changed'; },
+    question => { question.choices = [...question.choices].reverse(); },
+    question => { question.answer = (question.answer + 1) % question.choices.length; },
+    question => { question.grade = 6; },
+    question => { question.subject = 'japanese'; },
+    question => { question.unit += ' changed'; },
+    question => { question.prerequisite += ' changed'; },
+    question => { question.hint += ' changed'; },
+    question => { question.explanation += ' changed'; },
+    question => { question.speech += ' changed'; },
+    question => { question.speechSafe = !question.speechSafe; },
+  ];
+  for (const mutate of mutations) {
+    const changed = clone(expandedLegacyBank);
+    mutate(changed[0]!);
+    assert.equal(restoreGame(state, changed, [legacyQuestions]), null, 'even a different grade must retain its exact old content');
+  }
+  assert.equal(restoreGame(state, expandedLegacyBank.slice(1), [legacyQuestions]), null);
+  assert.equal(restoreGame(state, [...expandedLegacyBank, clone(expandedLegacyBank[0]!)], [legacyQuestions]), null);
+  const changedNewQuestion = clone(expandedLegacyBank);
+  changedNewQuestion[120]!.hint += ' changed';
+  assert.ok(restoreGame(state, changedNewQuestion, [legacyQuestions]), 'edits outside the old bank do not change that ongoing adventure');
+  const newState = arrive(createGame([player(0, 6)], expandedLegacyBank, 13));
+  assert.equal(restoreGame(newState, changedNewQuestion, [legacyQuestions]), null, 'current-bank saves still reject changes to any of their bank content');
+});
+
+test('compatible saves still reject altered deck order/answers, impossible progress and out-of-scope question or unit data', () => {
+  const state = arrive(createGame([player(0, 1), player(1, 6)], legacyQuestions, 58));
+  const reversedDeck = clone(state.decks);
+  reversedDeck[1]!.reverse();
+  const changedAnswer = clone(state.decks);
+  changedAnswer[0]![0]!.answer = (changedAnswer[0]![0]!.answer + 1) % changedAnswer[0]![0]!.choices;
+  const invalid: unknown[] = [
+    { ...state, decks: undefined }, { ...state, decks: reversedDeck }, { ...state, decks: changedAnswer },
+    { ...state, position: state.position + 1 }, { ...state, turnIndex: 1 }, { ...state, rolls: [...state.rolls].reverse() },
+    { ...state, usedQuestionIds: [[...state.usedQuestionIds[0]!, 'fixture-same-g1-m01'], []] },
+    { ...state, questionId: 'fixture-same-g1-m01' }, { ...state, attempts: -1 }, { ...state, rescues: 1 },
+    { ...state, players: state.players.map(person => ({ ...person, units: [...new Set(eligibleQuestions(person, legacyQuestions).map(question => question.unit)), `new-${person.grade}-math`] })) },
+  ];
+  for (const snapshot of invalid) assert.equal(restoreGame(snapshot, expandedLegacyBank, [legacyQuestions]), null);
+  assert.equal(restoreGame(state, expandedLegacyBank, [[...legacyQuestions].reverse()]), null, 'same IDs and signature cannot hide a changed historical shuffle order');
+});
+
+test('same-grade companions avoid immediate repeats while retaining personal unused pools, alternating subjects and fair turns', () => {
+  for (const grade of [1, 2, 3, 4, 5, 6] as Grade[]) for (let seed = 0; seed < 25; seed += 1) {
+    let state = createGame(Array.from({ length: 4 }, (_, index) => player(index, grade)), legacyQuestions, seed);
+    const seen = state.players.map(() => new Set<string>());
+    let previous: string | null = null;
+    for (let turn = 0; turn < 12; turn += 1) {
+      state = arrive(state);
+      const question = getQuestion(state, legacyQuestions)!;
+      assert.notEqual(question.id, previous, 'another unused question is available for each participant');
+      assert.equal(question.grade, grade);
+      assert.equal(question.subject, Math.floor(turn / 4) % 2 === 0 ? 'math' : 'japanese');
+      assert.ok(!seen[state.turnIndex]!.has(question.id));
+      seen[state.turnIndex]!.add(question.id);
+      previous = question.id;
+      state = nextTurn(finishInBank(state, legacyQuestions));
+    }
+    assert.deepEqual(state.completedByPlayer, [3, 3, 3, 3]);
+    assert.equal(state.phase, 'goal');
+  }
+});
+
+test('avoiding a peer repeat never repeats a personally used question early or blocks tiny chosen pools', () => {
+  const two = legacyQuestions.filter(question => question.grade === 1 && question.subject === 'math').slice(0, 2);
+  let state = arrive(createGame([player(), player(1)], two, 29));
+  const first = state.questionId;
+  state = arrive(nextTurn(finishInBank(state, two)));
+  const second = state.questionId;
+  assert.notEqual(second, first);
+  state = arrive(nextTurn(finishInBank(state, two)));
+  assert.equal(state.questionId, second, 'the only personally unused question wins over avoiding a peer repeat');
+  const beforeExchange = state;
+  state = act(state, { type: 'exchange' });
+  assert.equal(state.questionId, first, 'after exhaustion the other question can be exchanged back in');
+  assert.equal(state.position, beforeExchange.position);
+  assert.equal(state.turnIndex, beforeExchange.turnIndex);
+  assert.equal(state.turnsCompleted, beforeExchange.turnsCompleted);
+  const single = two.slice(0, 1);
+  let tiny = arrive(createGame([player(), player(1)], single, 29));
+  const only = tiny.questionId;
+  assert.equal(act(tiny, { type: 'exchange' }), tiny);
+  tiny = arrive(nextTurn(finishInBank(tiny, single)));
+  assert.equal(tiny.questionId, only, 'a one-question pool remains playable for the next participant');
+});
+
+test('every selected unit remains reachable without repetition through complete exchange pools for all grades and subjects', () => {
+  for (const grade of [1, 2, 3, 4, 5, 6] as Grade[]) for (const subject of ['math', 'japanese'] as Subject[]) {
+    const pool = expandedLegacyBank.filter(question => question.grade === grade && question.subject === subject);
+    const units = [...new Set(pool.map(question => question.unit))];
+    let state = arrive(createGame([player(0, grade, { units })], expandedLegacyBank, grade * 61));
+    const seen = new Set<string>();
+    const seenUnits = new Set<string>();
+    const position = state.position;
+    for (let index = 0; index < pool.length; index += 1) {
+      const question = getQuestion(state, expandedLegacyBank)!;
+      assert.equal(question.grade, grade);
+      assert.equal(question.subject, subject);
+      assert.ok(units.includes(question.unit));
+      assert.ok(!seen.has(question.id), `${grade}/${subject} repeated before exhaustion`);
+      seen.add(question.id); seenUnits.add(question.unit);
+      assert.equal(state.turnsCompleted, 0);
+      assert.equal(state.position, position);
+      if (index < pool.length - 1) state = act(state, { type: 'exchange' });
+    }
+    assert.deepEqual([...seen].sort(), pool.map(question => question.id).sort());
+    assert.deepEqual([...seenUnits].sort(), units.sort(), 'random deck order never strands a selected unit');
+    const previous = state.questionId;
+    state = act(state, { type: 'exchange' });
+    assert.notEqual(state.questionId, previous, 'an exhausted pool still exchanges away from the displayed question');
+    assert.ok(restoreGame(clone(state), expandedLegacyBank));
+  }
 });

@@ -187,6 +187,14 @@ test('exchanging an unfamiliar question clears prior support and attempts withou
 
 for (const outcome of ['correct', 'explained'] as const) {
   test(`${outcome} feedback states the answer and offers the existing audited diagram`, async ({ page }) => {
+    await openSetup(page);
+    await page.locator('.unit-picker summary').click();
+    // This regression concerns the 25 audited diagrams; explicitly select their
+    // original grade-1 arithmetic pool as the expanded bank also has text hints.
+    const diagramUnits = new Set(['10までのたしざん', 'かんじのよみ']);
+    for (const unit of new Set(questions.filter(question => question.grade === 1).map(question => question.unit))) {
+      if (!diagramUnits.has(unit)) await page.getByLabel(unit, { exact: true }).uncheck();
+    }
     await start(page);
     await roll(page);
     const question = await displayedQuestion(page);
