@@ -193,7 +193,7 @@ test('erasing the save from its preview returns to a playable title instead of a
   await dialog.getByRole('button', { name: 'ほぞんした つづきを けす', exact: true }).click();
   await expect(dialog.getByRole('heading')).toHaveText('ほぞんした つづきを けす？');
   await dialog.getByRole('button', { name: 'ほぞんを けす', exact: true }).click();
-  await expect(dialog.getByRole('heading')).toHaveText('あそびやすく せってい');
+  await expect(dialog.getByRole('heading', { level: 2 })).toHaveText('あそびやすく せってい');
   expect(await page.evaluate(() => localStorage.getItem('manabi-sugoroku-save-v1'))).toBeNull();
   await dialog.getByRole('button', { name: 'とじる', exact: true }).click();
   await expect(page.locator('.game-shell')).toHaveAttribute('data-scene', 'title');

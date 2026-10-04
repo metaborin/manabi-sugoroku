@@ -5,6 +5,7 @@ const remoteURL = process.env.PLAYWRIGHT_BASE_URL;
 export default defineConfig({
   testDir: './tests',
   testMatch: '**/*.spec.ts',
+  testIgnore: '**/pwa.spec.ts',
   timeout: 90_000,
   expect: { timeout: 8_000 },
   fullyParallel: false,

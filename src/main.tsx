@@ -6,4 +6,5 @@ import './journey.css';
 import './motion.css';
 import './polish.css';
 import './console.css';
+import './pwa.css';
 ReactDOM.createRoot(document.getElementById('root')!).render(<React.StrictMode><App /></React.StrictMode>);
